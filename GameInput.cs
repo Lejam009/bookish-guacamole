@@ -79,4 +79,31 @@ public static class GameInput
         return Input.GetMouseButtonDown(0);
 #endif
     }
+
+    public static bool InteractPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.E);
+#endif
+    }
+
+    public static bool DropPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.gKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.G);
+#endif
+    }
+
+    public static bool DropHeld()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.gKey.isPressed;
+#else
+        return Input.GetKey(KeyCode.G);
+#endif
+    }
 }
