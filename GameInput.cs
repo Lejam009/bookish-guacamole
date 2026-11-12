@@ -83,9 +83,9 @@ public static class GameInput
     public static bool InteractPressed()
     {
 #if ENABLE_INPUT_SYSTEM
-        return Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+        return Keyboard.current != null && Keyboard.current.fKey.wasPressedThisFrame;
 #else
-        return Input.GetKeyDown(KeyCode.E);
+        return Input.GetKeyDown(KeyCode.F);
 #endif
     }
 
