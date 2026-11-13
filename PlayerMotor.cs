@@ -84,6 +84,11 @@ public class PlayerMotor : MonoBehaviour
     /// <summary>Flips every footstep. Use for left/right sway or foot audio.</summary>
     public bool RightFootNext { get; private set; }
 
+    /// <summary>Set by other systems (e.g. aiming down sights): you can't sprint while this is true.</summary>
+    public bool SprintBlocked { get; set; }
+    /// <summary>Set by other systems: multiplies target walking speed (1 = normal).</summary>
+    public float SpeedMultiplier { get; set; } = 1f;
+
     public event Action<float> Landed;       // impact speed in m/s (hook fall damage here)
     public event Action Jumped;
     public event Action<bool> Footstep;      // true = right foot
@@ -191,7 +196,7 @@ public class PlayerMotor : MonoBehaviour
         // Sprinting stands you up (if there's headroom).
         if (sprintHeld && wantsCrouch && input.y > 0.1f && CanStand()) wantsCrouch = false;
         bool hasStamina = stamina == null || stamina.CanSprint;
-        IsSprinting = sprintHeld && input.y > 0.1f && !wantsCrouch && hasStamina;
+        IsSprinting = sprintHeld && input.y > 0.1f && !wantsCrouch && hasStamina && !SprintBlocked;
 
         UpdateHeight();
         HandleJump(dt);
@@ -319,7 +324,7 @@ public class PlayerMotor : MonoBehaviour
             ? Mathf.Clamp(1f - dir.y * slopeSpeedEffect, 0.5f, 1.2f)
             : 1f;
 
-        speed *= dirMult * loadMult * slopeMult * recoveryMult;
+        speed *= dirMult * loadMult * slopeMult * recoveryMult * SpeedMultiplier;
         Vector3 desired = dir * speed * input.magnitude;
 
         float mass = rb.mass;

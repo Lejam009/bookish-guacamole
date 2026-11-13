@@ -22,6 +22,8 @@ public class MouseLook : MonoBehaviour
     public float maxPitch = 85f;
     public bool invertY = false;
     public bool LookEnabled = true; // set false while an inspect/UI mode owns the mouse
+    /// <summary>Multiplies mouse sensitivity. WeaponADS lowers it as the FOV narrows so the aim speed matches the zoom.</summary>
+    [HideInInspector] public float SensitivityScale = 1f;
 
     [Header("Head Spring")]
     public float stiffness = 110f;
@@ -91,7 +93,7 @@ public class MouseLook : MonoBehaviour
 
         if (LookEnabled && Cursor.lockState == CursorLockMode.Locked)
         {
-            Vector2 d = GameInput.LookDelta() * sensitivity;
+            Vector2 d = GameInput.LookDelta() * sensitivity * SensitivityScale;
             targetYaw += d.x;
             targetPitch = Mathf.Clamp(targetPitch + (invertY ? d.y : -d.y), minPitch, maxPitch);
         }

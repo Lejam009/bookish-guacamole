@@ -106,4 +106,23 @@ public static class GameInput
         return Input.GetKey(KeyCode.G);
 #endif
     }
+
+    /// <summary>Right mouse button: aim down sights.</summary>
+    public static bool AimPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null && Mouse.current.rightButton.wasPressedThisFrame;
+#else
+        return Input.GetMouseButtonDown(1);
+#endif
+    }
+
+    public static bool AimHeld()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null && Mouse.current.rightButton.isPressed;
+#else
+        return Input.GetMouseButton(1);
+#endif
+    }
 }

@@ -73,6 +73,10 @@ public class HeldItemSlot : MonoBehaviour
     [Tooltip("Metres the item sags when stamina is gone (scaled by item weight).")]
     public float fatigueSag = 0.025f;
 
+    [Header("Aiming")]
+    [Tooltip("How much bob, sway and tired-arm motion is removed at full aim. Braced against the shoulder, the gun moves far less.")]
+    [Range(0f, 1f)] public float aimMotionReduction = 0.85f;
+
     [Header("Wall Collision")]
     [Tooltip("Pull the item back and tilt it up when you walk into a wall.")]
     public bool retractFromWalls = true;
@@ -94,6 +98,10 @@ public class HeldItemSlot : MonoBehaviour
     /// <summary>ID of what's in the hands ("" if nothing).</summary>
     public string HeldItemId => HeldData != null ? HeldData.id : string.Empty;
     public bool IsEquipping => state == State.Equipping;
+    /// <summary>True while the player is winding up a throw.</summary>
+    public bool IsThrowCharging => throwCharge > 0.02f;
+    /// <summary>How far (metres) the item is currently pushed back by a wall in front of you.</summary>
+    public float WallPushAmount => wallPush;
     /// <summary>Set true while another system (e.g. weapon inspect mode) positions the item itself.</summary>
     public bool ExternalControl { get; set; }
 
@@ -116,6 +124,11 @@ public class HeldItemSlot : MonoBehaviour
     Quaternion prevCamRot = Quaternion.identity;
     float sprintBlend, drawBlend, chargeBlend, throwCharge, wallPush, bobBlend, breathPhase;
     bool startingHandled;
+
+    // Aim pose pushed in by WeaponADS
+    float aimBlend;
+    Vector3 aimPos, aimSway;
+    Quaternion aimRot = Quaternion.identity;
 
     void Awake()
     {
@@ -186,6 +199,19 @@ public class HeldItemSlot : MonoBehaviour
 
     /// <summary>Wind-up amount 0..1 (the interactor feeds this while the drop key is held).</summary>
     public void SetThrowCharge(float value01) => throwCharge = Mathf.Clamp01(value01);
+
+    /// <summary>
+    /// Called every frame by WeaponADS. blend01 = 0 is the normal hold pose, 1 is fully on the sights.
+    /// localPos/localRot is the camera-space pose that lines the sights up with the eye;
+    /// swayEuler is extra aim wobble in degrees (breathing, muscle tremor).
+    /// </summary>
+    public void SetAimPose(float blend01, Vector3 localPos, Quaternion localRot, Vector3 swayEuler)
+    {
+        aimBlend = Mathf.Clamp01(blend01);
+        aimPos = localPos;
+        aimRot = localRot;
+        aimSway = swayEuler;
+    }
 
     public ItemSaveData CaptureSave()
     {
@@ -429,6 +455,16 @@ public class HeldItemSlot : MonoBehaviour
         Vector3 lp = Vector3.Lerp(d.holdPosition, d.sprintPosition, sprintBlend);
         Quaternion lr = Quaternion.Slerp(Quaternion.Euler(d.holdEuler), Quaternion.Euler(d.sprintEuler), sprintBlend);
 
+        // Aim down sights: slide from the hold pose to the pose that lines the sights up with the eye,
+        // and calm the passive motion (bob, sway, tired arms) the more the gun is braced.
+        float a = aimBlend;
+        float steady = 1f - a * aimMotionReduction;
+        if (a > 0.0001f)
+        {
+            lp = Vector3.Lerp(lp, aimPos, a);
+            lr = Quaternion.Slerp(lr, aimRot, a);
+        }
+
         float draw = drawBlend * drawBlend * (3f - 2f * drawBlend);
         lp += new Vector3(0.02f, -0.32f, -0.08f) * draw;
         lr = Quaternion.Euler(40f * draw, 0f, 0f) * lr;
@@ -436,11 +472,13 @@ public class HeldItemSlot : MonoBehaviour
         lp += new Vector3(0.07f, -0.04f, -0.16f) * chargeBlend;
         lr = Quaternion.Euler(-8f * chargeBlend, -12f * chargeBlend, 6f * chargeBlend) * lr;
 
-        lp.z -= wallPush;
-        lr = Quaternion.Euler(-Mathf.Min(45f, wallPush * 130f), 0f, 0f) * lr;
+        // (while aiming, the wall push is faded out so it can't pull the sights off the eye)
+        lp.z -= wallPush * (1f - a);
+        lr = Quaternion.Euler(-Mathf.Min(45f, wallPush * 130f * (1f - a)), 0f, 0f) * lr;
 
-        lp += posOff + new Vector3(bobX, bobY - sag, 0f);
-        Vector3 rotEuler = rotOff + new Vector3(breath * breathPitch * fatigue, 0f, swing * bobRoll * bobScale);
+        lp += (posOff + new Vector3(bobX, bobY - sag, 0f)) * steady;
+        Vector3 rotEuler = (rotOff + new Vector3(breath * breathPitch * fatigue, 0f, swing * bobRoll * bobScale)) * steady
+                         + aimSway * a;
         Quaternion localRot = Quaternion.Euler(rotEuler) * lr;
 
         if (ExternalControl) return; // someone else (inspect mode) is posing the item
