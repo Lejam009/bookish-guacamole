@@ -24,6 +24,13 @@ public class MouseLook : MonoBehaviour
     public bool LookEnabled = true; // set false while an inspect/UI mode owns the mouse
     /// <summary>Multiplies mouse sensitivity. WeaponADS lowers it as the FOV narrows so the aim speed matches the zoom.</summary>
     [HideInInspector] public float SensitivityScale = 1f;
+    /// <summary>Extra multiplier on look speed (WeaponInspect lowers it while the cursor is free). 1 = normal.</summary>
+    [HideInInspector] public float LookMultiplier = 1f;
+    /// <summary>
+    /// True = the camera still follows the mouse while the cursor is free and visible, and clicking does not
+    /// re-lock the cursor. Set by WeaponInspect.
+    /// </summary>
+    [HideInInspector] public bool FreeCursorMode;
 
     [Header("Head Spring")]
     public float stiffness = 110f;
@@ -88,12 +95,12 @@ public class MouseLook : MonoBehaviour
     void Update()
     {
         if (GameInput.EscapePressed()) SetCursorLocked(false);
-        else if (LookEnabled && Cursor.lockState != CursorLockMode.Locked && GameInput.ClickPressed())
+        else if (LookEnabled && !FreeCursorMode && Cursor.lockState != CursorLockMode.Locked && GameInput.ClickPressed())
             SetCursorLocked(true);
 
-        if (LookEnabled && Cursor.lockState == CursorLockMode.Locked)
+        if (LookEnabled && (Cursor.lockState == CursorLockMode.Locked || FreeCursorMode))
         {
-            Vector2 d = GameInput.LookDelta() * sensitivity * SensitivityScale;
+            Vector2 d = GameInput.LookDelta() * sensitivity * SensitivityScale * LookMultiplier;
             targetYaw += d.x;
             targetPitch = Mathf.Clamp(targetPitch + (invertY ? d.y : -d.y), minPitch, maxPitch);
         }

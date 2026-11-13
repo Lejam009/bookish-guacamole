@@ -62,6 +62,52 @@ public static class GameInput
 #endif
     }
 
+    public static bool ReloadPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.R);
+#endif
+    }
+
+    public static bool ReloadHeld()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.rKey.isPressed;
+#else
+        return Input.GetKey(KeyCode.R);
+#endif
+    }
+
+    public static bool ClickHeld()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null && Mouse.current.leftButton.isPressed;
+#else
+        return Input.GetMouseButton(0);
+#endif
+    }
+
+    public static bool ClickReleased()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null && Mouse.current.leftButton.wasReleasedThisFrame;
+#else
+        return Input.GetMouseButtonUp(0);
+#endif
+    }
+
+    /// <summary>Cursor position in screen pixels (only meaningful while the cursor is free).</summary>
+    public static Vector2 PointerPosition()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero;
+#else
+        return Input.mousePosition;
+#endif
+    }
+
     public static bool EscapePressed()
     {
 #if ENABLE_INPUT_SYSTEM

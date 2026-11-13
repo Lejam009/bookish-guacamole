@@ -98,6 +98,9 @@ public class HeldItemSlot : MonoBehaviour
     /// <summary>ID of what's in the hands ("" if nothing).</summary>
     public string HeldItemId => HeldData != null ? HeldData.id : string.Empty;
     public bool IsEquipping => state == State.Equipping;
+    /// <summary>The camera-space pose the item would have in the hands right now (updated even under ExternalControl).</summary>
+    public Vector3 PoseLocalPos { get; private set; }
+    public Quaternion PoseLocalRot { get; private set; } = Quaternion.identity;
     /// <summary>True while the player is winding up a throw.</summary>
     public bool IsThrowCharging => throwCharge > 0.02f;
     /// <summary>How far (metres) the item is currently pushed back by a wall in front of you.</summary>
@@ -480,6 +483,10 @@ public class HeldItemSlot : MonoBehaviour
         Vector3 rotEuler = (rotOff + new Vector3(breath * breathPitch * fatigue, 0f, swing * bobRoll * bobScale)) * steady
                          + aimSway * a;
         Quaternion localRot = Quaternion.Euler(rotEuler) * lr;
+
+        // Where the hands WOULD hold the item this frame (camera space). Inspect mode eases back to this when it ends.
+        PoseLocalPos = lp;
+        PoseLocalRot = localRot;
 
         if (ExternalControl) return; // someone else (inspect mode) is posing the item
 
