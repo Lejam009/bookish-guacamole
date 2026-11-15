@@ -3,109 +3,127 @@ using UnityEngine;
 
 /// <summary>
 /// Inspect-mode attachment picker (simple IMGUI so it needs no Canvas setup; swap for your real UI later).
+/// Put it on the Player root next to WeaponInspect. It needs no calls from other scripts: it listens to
+/// WeaponInspect and uses its hotspot hovering, so it only ever sees what the cursor is really over.
 ///
-/// While inspecting a weapon:
+/// While inspecting a weapon that has WeaponAttachments:
 ///   - markers show every slot; hover one to see what is in it
 ///   - left click a slot: menu to remove the installed attachment or install one from your stash
-///   - mouse wheel over a Picatinny slot: slide the attachment along the rail (eye relief)
+///   - mouse wheel over a Picatinny slot: slide the attachment along the rail
 ///   - a stats panel shows the weapon's totals
-///   - hidden while right-click rotating; changes need a SafeZone (WeaponAttachments.requireSafeZoneToModify)
+///   - changes only work in a SafeZone (WeaponAttachments.requireSafeZoneToModify)
+///   - everything hides while you spin the gun with right mouse
 ///
-/// Call Open(weapon) when inspect mode starts and Close() when it ends.
+/// Magazine slots: tick "Show In Picker" OFF on them if your reload system owns clicking them.
 /// </summary>
 public class AttachmentInspectUI : MonoBehaviour
 {
-    [Header("References")]
-    public Camera viewCamera;
+    [Header("References (found automatically if empty)")]
+    public WeaponInspect inspect;
     public AttachmentInventory inventory;
-
-    [Header("Picking")]
-    public LayerMask slotMask = ~0;
-    public float maxPickDistance = 3f;
+    public Camera viewCamera;
 
     WeaponAttachments weapon;
     bool active;
     AttachmentSlot hovered, menuSlot;
     Vector2 menuPos;
     Rect menuRect;
-    string toast;
-    float toastUntil;
     GUIStyle labelStyle, buttonStyle;
 
     void Awake()
     {
-        if (viewCamera == null) viewCamera = Camera.main;
+        if (inspect == null) inspect = GetComponentInParent<WeaponInspect>();
         if (inventory == null) inventory = GetComponentInParent<AttachmentInventory>();
     }
 
-    public void Open(WeaponAttachments w)
+    void OnEnable()
     {
-        weapon = w;
-        active = w != null;
-        hovered = null;
-        menuSlot = null;
+        if (inspect == null) return;
+        inspect.Entered += HandleEntered;
+        inspect.Exited += Close;
     }
 
-    public void Close()
+    void OnDisable()
+    {
+        if (inspect != null)
+        {
+            inspect.Entered -= HandleEntered;
+            inspect.Exited -= Close;
+        }
+        Close();
+    }
+
+    void HandleEntered()
+    {
+        Pickupable item = inspect.Item;
+        weapon = item != null ? item.GetComponent<WeaponAttachments>() : null;
+        active = weapon != null;
+        hovered = null;
+        menuSlot = null;
+
+        if (viewCamera == null && inspect.look != null)
+        {
+            viewCamera = inspect.look.GetComponent<Camera>();
+            if (viewCamera == null) viewCamera = inspect.look.GetComponentInChildren<Camera>();
+        }
+        if (viewCamera == null) viewCamera = Camera.main;
+    }
+
+    void Close()
     {
         active = false;
         weapon = null;
         hovered = null;
+        CloseMenu();
+    }
+
+    void CloseMenu()
+    {
         menuSlot = null;
+        if (inspect != null) inspect.PointerBlocked = false;
     }
 
     void Update()
     {
-        if (!active || weapon == null || viewCamera == null) return;
+        if (!active || weapon == null || inspect == null) return;
 
-        if (WeaponInspectRotator.IsRotating)
+        if (!inspect.IsInspecting || inspect.IsExiting)
+        {
+            Close();
+            return;
+        }
+
+        // Spinning the gun: hide everything, drop any open menu
+        if (inspect.IsRotating)
         {
             hovered = null;
-            menuSlot = null;
+            if (menuSlot != null) CloseMenu();
+            return;
+        }
+
+        // Outside a safe zone there is nothing to see or do: no weapon info, no attachment points
+        if (!weapon.CanPlayerModify)
+        {
+            hovered = null;
+            if (menuSlot != null) CloseMenu();
             return;
         }
         if (menuSlot != null) return;
 
-        hovered = Pick();
+        AttachmentSlot s = AttachmentSlot.FromHotspot(inspect.HoveredHotspot);
+        hovered = s != null && s.Owner == weapon && s.showInPicker ? s : null;
         if (hovered == null) return;
 
-        if (!weapon.CanPlayerModify)
-        {
-            if (GameInput.ClickPressed()) Toast("Find somewhere safe to work on your weapon.");
-            return;
-        }
-
-        int scroll = AttachmentInput.ScrollStep();
+        int scroll = GameInput.ScrollStep();
         if (scroll != 0 && hovered.isRail && hovered.Installed != null) weapon.ShiftRail(hovered, scroll);
 
         if (GameInput.ClickPressed())
         {
             menuSlot = hovered;
-            Vector2 p = AttachmentInput.PointerPosition();
+            inspect.PointerBlocked = true; // the gun's hotspots stop reacting while the menu is open
+            Vector2 p = GameInput.PointerPosition();
             menuPos = new Vector2(p.x, Screen.height - p.y);
         }
-    }
-
-    AttachmentSlot Pick()
-    {
-        Ray ray = viewCamera.ScreenPointToRay(AttachmentInput.PointerPosition());
-        RaycastHit[] hits = Physics.RaycastAll(ray, maxPickDistance, slotMask, QueryTriggerInteraction.Collide);
-
-        AttachmentSlot best = null;
-        float bestDist = float.MaxValue;
-        foreach (RaycastHit h in hits)
-        {
-            AttachmentSlot s = h.collider.GetComponentInParent<AttachmentSlot>();
-            if (s == null || s.Owner != weapon || !s.showInPicker) continue;
-            if (h.distance < bestDist) { bestDist = h.distance; best = s; }
-        }
-        return best;
-    }
-
-    void Toast(string msg)
-    {
-        toast = msg;
-        toastUntil = Time.unscaledTime + 2.5f;
     }
 
     // ------------------------------------------------------------------ drawing
@@ -119,14 +137,15 @@ public class AttachmentInspectUI : MonoBehaviour
 
     void OnGUI()
     {
-        if (!active || weapon == null || viewCamera == null) return;
+        if (!active || weapon == null || inspect == null || viewCamera == null) return;
+
+        // Weapon info and attachment points are only shown in a safe zone
+        if (!weapon.CanPlayerModify) return;
         EnsureStyles();
 
         DrawStatsPanel();
-        if (Time.unscaledTime < toastUntil)
-            GUI.Label(new Rect(Screen.width * 0.5f - 200f, Screen.height - 80f, 400f, 30f), toast, labelStyle);
 
-        if (WeaponInspectRotator.IsRotating) return;
+        if (inspect.IsRotating) return;
 
         DrawMarkers();
         if (menuSlot != null) DrawMenu();
@@ -149,7 +168,7 @@ public class AttachmentInspectUI : MonoBehaviour
             if (s == hovered && menuSlot == null)
             {
                 string installed = s.Installed != null ? s.Installed.displayName : "<i>Empty</i>";
-                string hint = s.isRail && s.Installed != null ? "\nScroll: slide on rail" : "";
+                string hint = s.isRail && s.Installed != null && weapon.CanPlayerModify ? "\nScroll: slide on rail" : "";
                 GUI.color = Color.white;
                 GUI.Label(new Rect(sp.x + 14f, Screen.height - sp.y - 12f, 320f, 60f),
                           $"<b>{s.displayLabel}</b>: {installed}{hint}", labelStyle);
@@ -163,7 +182,7 @@ public class AttachmentInspectUI : MonoBehaviour
         Event e = Event.current;
         if (e.type == EventType.MouseDown && !menuRect.Contains(e.mousePosition))
         {
-            menuSlot = null;
+            CloseMenu();
             e.Use();
             return;
         }
@@ -189,7 +208,7 @@ public class AttachmentInspectUI : MonoBehaviour
             {
                 AttachmentData removed = weapon.Remove(menuSlot);
                 if (removed != null && inventory != null) inventory.Add(removed);
-                menuSlot = null;
+                CloseMenu();
                 return;
             }
             y += rowH;
@@ -209,7 +228,7 @@ public class AttachmentInspectUI : MonoBehaviour
                     if (weapon.Install(menuSlot, d)) { if (previous != null) inventory.Add(previous); }
                     else inventory.Add(d);
                 }
-                menuSlot = null;
+                CloseMenu();
                 return;
             }
             y += rowH;
@@ -230,5 +249,8 @@ public class AttachmentInspectUI : MonoBehaviour
             (s.magazineCapacity > 0 ? $"\nMag capacity  {s.magazineCapacity}" : "");
         GUI.Box(new Rect(16f, 16f, 220f, 150f), GUIContent.none);
         GUI.Label(new Rect(24f, 20f, 210f, 145f), text, labelStyle);
+
+        if (inspect.CanRotate)
+            GUI.Label(new Rect(16f, 172f, 360f, 26f), "Hold right mouse: turn the weapon", labelStyle);
     }
 }

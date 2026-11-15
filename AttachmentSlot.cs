@@ -5,13 +5,15 @@ using UnityEngine;
 /// Create empty children on the weapon (e.g. "Slot_Optic_Top", "Slot_FrontSight", "Slot_Stock"),
 /// position them where the attachment should sit, and add this component.
 ///
-/// This is also the click target in inspect mode, so it needs a collider. If you don't add one,
-/// a small trigger box is created automatically. If you already use your universal socket hitbox
-/// prefab, put this component on (or above) that object and it will use its collider.
+/// This is also the click target in inspect mode. It works through InspectHotspot, so WeaponInspect enables
+/// its collider only while you inspect (held weapons have all colliders off). If you don't add a collider,
+/// a small trigger box and an InspectHotspot are created automatically. If you already use your universal
+/// socket hitbox prefab, put this component on that object and it will use its collider and hotspot.
 ///
 /// Picatinny rails: tick isRail, set how many 10 mm slots the rail has and which local axis it
 /// runs along. Attachments can then be slid along it (this is how eye relief works).
 /// </summary>
+[DefaultExecutionOrder(-100)] // runs before Pickupable.Awake so the hitbox is in its collider list (off while held)
 public class AttachmentSlot : MonoBehaviour
 {
     [Header("Identity")]
@@ -39,8 +41,15 @@ public class AttachmentSlot : MonoBehaviour
     public int defaultRailIndex = 0;
 
     [Header("Install Animation")]
-    [Tooltip("Local offset the attachment starts from and slides in from (and pops out to).")]
+    [Tooltip("Local offset the attachment starts from and slides in from (and pops out to). " +
+             "Point it AWAY from the weapon's body (e.g. up for a top rail) so the part never travels through the gun.")]
     public Vector3 insertOffset = new Vector3(0f, 0.05f, 0f);
+    [Tooltip("Spring stiffness of the install. Lower = slower, gentler settle.")]
+    public float installStiffness = 150f;
+    [Tooltip("1 = critically damped (no overshoot into the weapon). Higher = softer, slower final approach.")]
+    public float installDampingRatio = 1.15f;
+    [Tooltip("Random twist (degrees) the part starts with. 0 = it slides in perfectly straight.")]
+    public float installTwistDegrees = 0f;
 
     [Header("Inspect Interaction")]
     [Tooltip("Turn OFF for magazine slots if your reload system already owns clicking them.")]
@@ -59,6 +68,9 @@ public class AttachmentSlot : MonoBehaviour
 
     public Transform Mount => mountPoint != null ? mountPoint : transform;
 
+    /// <summary>The InspectHotspot WeaponInspect uses to hover/click this slot.</summary>
+    public InspectHotspot Hotspot { get; private set; }
+
     void Awake()
     {
         if (hitbox == null) hitbox = GetComponentInChildren<Collider>();
@@ -69,7 +81,15 @@ public class AttachmentSlot : MonoBehaviour
             box.size = Vector3.one * hitboxSize;
             hitbox = box;
         }
+
+        Hotspot = GetComponent<InspectHotspot>();
+        if (Hotspot == null) Hotspot = gameObject.AddComponent<InspectHotspot>();
+        if (string.IsNullOrEmpty(Hotspot.hotspotId)) Hotspot.hotspotId = slotID;
     }
+
+    /// <summary>The slot an InspectHotspot belongs to (null if it is some other kind of hotspot).</summary>
+    public static AttachmentSlot FromHotspot(InspectHotspot hotspot)
+        => hotspot != null ? hotspot.GetComponent<AttachmentSlot>() : null;
 
     void OnDrawGizmos()
     {

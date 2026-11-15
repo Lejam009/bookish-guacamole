@@ -22,6 +22,12 @@ using UnityEngine;
 ///   - walking is slower and sprinting is off; jumping drops you out of inspect mode
 ///   - InspectHotspot components on the weapon prefab become clickable. Subscribe to their events (or use
 ///     the UnityEvents) to build "click the mag to pull it out" and similar.
+///   - SAFE ZONES: while the player stands in a SafeZone, holding right mouse turns the gun freely (trackball
+///     style, with weight and inertia) around its balance point. The camera is frozen while you do it. Tapping R
+///     (flip) or leaving inspect mode eases the gun back to its normal orientation. Outside a safe zone the
+///     gun stays on its pose and right mouse does nothing.
+///   - Attachments: AttachmentSlot components create their own InspectHotspots, and AttachmentInspectUI
+///     (on the player) uses this class to let you add, remove and slide attachments (safe zone only).
 ///
 /// Put this on the Player root next to HeldItemSlot and WeaponADS.
 /// Per-weapon poses: add WeaponInspectPoses to the weapon prefab. Without it, the default poses below are used.
@@ -108,8 +114,38 @@ public class WeaponInspect : MonoBehaviour
     [Tooltip("How far (metres) the cursor ray reaches.")]
     public float hotspotRange = 3f;
 
+    [Header("Safe-Zone Rotation (hold right mouse)")]
+    [Tooltip("On: the gun can only be turned while standing inside a SafeZone.")]
+    public bool requireSafeZoneToRotate = true;
+    [Tooltip("Degrees the gun turns per mouse count (before the weight feel below).")]
+    public float degreesPerCount = 0.35f;
+    [Tooltip("How quickly the spin dies after you let go. Higher = stops sooner. Heavier guns stop a little sooner.")]
+    public float spinDamping = 4f;
+    public float maxSpinSpeed = 900f;
+    [Tooltip("Weapon weight (kg) that feels neutral. Heavier guns are sluggish to turn, lighter ones are snappy.")]
+    public float referenceWeightKg = 3.5f;
+    [Tooltip("Seconds to ease back to the normal orientation after a flip or when leaving inspect mode.")]
+    public float rotationReturnTime = 0.35f;
+    [Tooltip("The point the gun spins around (weapon space, relative to the object's origin). 0,0,0 = the origin. " +
+             "Overridden per weapon by WeaponInspectPoses.")]
+    public Vector3 defaultRotationCenter = Vector3.zero;
+    [Tooltip("While you turn the gun, it glides to the middle of the screen so it spins around that point.")]
+    public bool centerGunWhileRotating = true;
+    [Tooltip("Metres in front of your eye the spin point sits when centred (long guns are pushed out a bit further).")]
+    public float rotateViewDistance = 0.45f;
+    [Tooltip("How fast the gun glides to / from the screen centre.")]
+    public float centerSpeed = 8f;
+
     // ---- Public state / events ----
     public bool IsInspecting => phase != Phase.None;
+    /// <summary>True while the player is spinning the gun with right mouse (the camera is frozen meanwhile).</summary>
+    public bool IsRotating => rotating;
+    /// <summary>True when right mouse would turn the gun right now (inspecting, and in a safe zone if required).</summary>
+    public bool CanRotate => phase == Phase.Active && (!requireSafeZoneToRotate || SafeZone.PlayerInSafeZone);
+    /// <summary>Set by UI that sits over the gun (menus) so the cursor stops hovering/pressing hotspots behind it.</summary>
+    public bool PointerBlocked { get; set; }
+    /// <summary>The held weapon while inspecting (null otherwise).</summary>
+    public Pickupable Item => phase != Phase.None ? item : null;
     /// <summary>True while the gun is swinging back to the hands.</summary>
     public bool IsExiting => phase == Phase.Exiting;
     /// <summary>0 = Pose A, 1 = Pose B.</summary>
@@ -122,6 +158,7 @@ public class WeaponInspect : MonoBehaviour
     public event Action Entered;
     public event Action Exited;
     public event Action<int> PoseChanged;
+    public event Action<bool> RotatingChanged;
 
     enum Phase { None, Active, Exiting }
     Phase phase = Phase.None;
@@ -129,6 +166,14 @@ public class WeaponInspect : MonoBehaviour
     Camera cam;
     Pickupable item;
     WeaponInspectPoses customPoses;
+    WeaponAttachments attachments;
+
+    // Free rotation (safe zone). userRot is applied on top of the pose, in frame space, about rotationCenter.
+    Quaternion userRot = Quaternion.identity;
+    Vector3 spin;                 // frame-space angular velocity, degrees/second
+    Vector3 rotationCenter;
+    bool rotating, returningToRest;
+    float centerBlend;            // 0 = on its normal pose, 1 = pivot at the middle of the screen
 
     Vector3 pos, posVel, angVel;
     Quaternion rot = Quaternion.identity;
@@ -214,9 +259,36 @@ public class WeaponInspect : MonoBehaviour
 
         if (phase == Phase.Active)
         {
-            if (GameInput.EscapePressed()) BeginExit(false);
-            else UpdatePointer();
+            if (GameInput.EscapePressed())
+            {
+                BeginExit(false);
+                return;
+            }
+
+            // Right mouse spins the gun (safe zone only). The camera is frozen while it does.
+            SetRotating(CanRotate && GameInput.AimHeld());
+            look.LookMultiplier = rotating ? 0f : inspectLookMultiplier;
+
+            UpdatePointer();
         }
+    }
+
+    void SetRotating(bool value)
+    {
+        if (rotating == value) return;
+        rotating = value;
+        if (value) returningToRest = false;
+        RotatingChanged?.Invoke(value);
+    }
+
+    void ResetRotationState()
+    {
+        SetRotating(false);
+        userRot = Quaternion.identity;
+        spin = Vector3.zero;
+        returningToRest = false;
+        centerBlend = 0f;
+        PointerBlocked = false;
     }
 
     void HandleReloadKey()
@@ -273,6 +345,14 @@ public class WeaponInspect : MonoBehaviour
 
         item = slot.Current;
         customPoses = item.GetComponent<WeaponInspectPoses>();
+        attachments = item.GetComponent<WeaponAttachments>();
+        rotationCenter = customPoses != null ? customPoses.rotationOffset : defaultRotationCenter;
+        ResetRotationState();
+
+        // The simulation frame must face where you look BEFORE we measure the gun in it. (It used to be set after,
+        // so the first inspect measured the gun in a stale frame and it swept through your body to its pose.)
+        frameYaw = look.Yaw;
+        frameYawVel = 0f;
 
         // Start from wherever the gun is right now (hip, aimed, ...) so the swing-up is continuous
         GetFrame(out Vector3 frameOrigin, out Quaternion frameRot);
@@ -284,8 +364,6 @@ public class WeaponInspect : MonoBehaviour
         poseIndex = 0;
         bobBlend = 0f;
         wallPush = 0f;
-        frameYaw = look.Yaw;
-        frameYawVel = 0f;
 
         slot.ExternalControl = true;
         EnableHotspotColliders();
@@ -306,6 +384,9 @@ public class WeaponInspect : MonoBehaviour
         phase = Phase.Exiting;
         exitTimer = 0f;
 
+        SetRotating(false);
+        returningToRest = true;
+        PointerBlocked = false;
         ClearPointer();
         DisableHotspotColliders();
 
@@ -329,6 +410,8 @@ public class WeaponInspect : MonoBehaviour
         motor.SprintBlocked = false;
         motor.SpeedMultiplier = 1f;
         item = null;
+        attachments = null;
+        ResetRotationState();
         Exited?.Invoke();
     }
 
@@ -351,12 +434,15 @@ public class WeaponInspect : MonoBehaviour
         motor.SpeedMultiplier = 1f;
         phase = Phase.None;
         item = null;
+        attachments = null;
+        ResetRotationState();
         Exited?.Invoke();
     }
 
     void FlipPose()
     {
         poseIndex = 1 - poseIndex;
+        returningToRest = true; // the gun un-twists as it flips to the other side
         float lift = flipLift / (1f + Mathf.Max(0f, item.MassKg - 2.5f) * heavySlowdownPerKg);
         posVel += Vector3.up * lift;
         PoseChanged?.Invoke(poseIndex);
@@ -402,7 +488,8 @@ public class WeaponInspect : MonoBehaviour
 
     void UpdatePointer()
     {
-        InspectHotspot over = FindHotspot();
+        // No hovering or clicking hotspots while spinning the gun or while a menu is over it
+        InspectHotspot over = (rotating || PointerBlocked) ? null : FindHotspot();
         if (over != hovered)
         {
             if (hovered != null) hovered.NotifyHover(false);
@@ -559,16 +646,85 @@ public class WeaponInspect : MonoBehaviour
         if (step > 1e-6f)
             rot = Quaternion.Normalize(Quaternion.AngleAxis(step * Mathf.Rad2Deg, angVel.normalized) * rot);
 
+        // --- Free rotation from the player (safe zone). Spins about the object's origin (plus rotationCenter),
+        //     and that point glides to the middle of the screen while the gun is turned.
+        UpdateUserRotation(rawDt, frameInv, camT);
+
+        bool turned = rotating || spin.sqrMagnitude > 0f || userRot != Quaternion.identity;
+        bool wantCenter = centerGunWhileRotating && CanRotate && !returningToRest && turned;
+        centerBlend += ((wantCenter ? 1f : 0f) - centerBlend) * (1f - Mathf.Exp(-centerSpeed * dt));
+        if (!wantCenter && centerBlend < 0.001f) centerBlend = 0f;
+
+        Vector3 centerInFrame = rot * rotationCenter;
+        float viewDistance = Mathf.Max(rotateViewDistance, item.data.lengthMeters * 0.55f);
+        Vector3 viewCenter = (frameInv * camT.forward) * viewDistance;       // straight ahead of the eye point
+        Vector3 pivot = Vector3.Lerp(pos + centerInFrame, viewCenter, centerBlend);
+        Vector3 spunPos = pivot - userRot * centerInFrame;
+
         // Walk bob sits on top of the springs, so it never fights the swing between poses
         ComputeBob(dt, out Vector3 bobOffset, out Quaternion bobTilt);
-        item.transform.SetPositionAndRotation(frameOrigin + frameRot * (pos + bobOffset), frameRot * (bobTilt * rot));
+        item.transform.SetPositionAndRotation(frameOrigin + frameRot * (spunPos + bobOffset),
+            frameRot * (bobTilt * userRot * rot));
 
         // --- Leaving: hand the item back to HeldItemSlot once it has arrived ---
         if (phase == Phase.Exiting)
         {
             exitTimer += rawDt;
-            bool arrived = (pos - targetPos).sqrMagnitude < 0.00004f && Quaternion.Angle(rot, targetRot) < 1.5f;
+            bool arrived = (pos - targetPos).sqrMagnitude < 0.00004f && Quaternion.Angle(rot, targetRot) < 1.5f
+                           && Quaternion.Angle(userRot, Quaternion.identity) < 1.5f;
             if (arrived || exitTimer > 2f) Finish();
+        }
+    }
+
+    /// <summary>
+    /// Right-mouse trackball: dragging turns the gun about the camera's up/right axes, so the side of the gun
+    /// facing you follows the cursor. Heavier guns turn less per drag and stop sooner after release.
+    /// The weight is the whole loadout (WeaponAttachments.TotalWeightKg), so a gun with a big optic feels heavier.
+    /// </summary>
+    void UpdateUserRotation(float dt, Quaternion frameInv, Transform camT)
+    {
+        float mass = attachments != null ? attachments.TotalWeightKg : item.MassKg;
+        float massRatio = Mathf.Max(0.1f, mass) / Mathf.Max(0.1f, referenceWeightKg);
+
+        if (rotating)
+        {
+            float feel = Mathf.Clamp(1f / Mathf.Sqrt(massRatio), 0.6f, 1.3f);
+            Vector2 d = GameInput.LookDelta() * degreesPerCount * feel;
+
+            // Drag right: near side goes right. Drag up: near side goes up. (camera axes, expressed in frame space)
+            Quaternion toFrame = frameInv * camT.rotation;
+            Vector3 degreesThisFrame = toFrame * (Vector3.up * -d.x + Vector3.right * d.y);
+            Vector3 target = degreesThisFrame / Mathf.Max(dt, 0.0001f);
+
+            spin = Vector3.Lerp(spin, target, 1f - Mathf.Exp(-25f * dt));
+            spin = Vector3.ClampMagnitude(spin, maxSpinSpeed);
+        }
+        else
+        {
+            spin *= Mathf.Exp(-spinDamping * Mathf.Clamp(massRatio, 0.7f, 1.6f) * dt);
+            if (spin.sqrMagnitude < 1f) spin = Vector3.zero;
+        }
+
+        if (spin.sqrMagnitude > 0f)
+            userRot = Quaternion.Normalize(Quaternion.AngleAxis(spin.magnitude * dt, spin.normalized) * userRot);
+
+        // Ease back to the normal orientation after a flip, when leaving, or if the safe zone is gone
+        bool shouldReturn = returningToRest || phase == Phase.Exiting || !CanRotate;
+        if (!rotating && shouldReturn && userRot != Quaternion.identity)
+        {
+            float t = 1f - Mathf.Exp(-4f * dt / Mathf.Max(0.05f, rotationReturnTime));
+            userRot = Quaternion.Slerp(userRot, Quaternion.identity, t);
+            spin *= 1f - t;
+            if (Quaternion.Angle(userRot, Quaternion.identity) < 0.1f)
+            {
+                userRot = Quaternion.identity;
+                spin = Vector3.zero;
+                returningToRest = false;
+            }
+        }
+        else if (!rotating && shouldReturn)
+        {
+            returningToRest = false;
         }
     }
 }

@@ -153,6 +153,17 @@ public static class GameInput
 #endif
     }
 
+    /// <summary>-1, 0 or +1 per frame (one step per mouse wheel notch, up = +1).</summary>
+    public static int ScrollStep()
+    {
+#if ENABLE_INPUT_SYSTEM
+        float y = Mouse.current != null ? Mouse.current.scroll.ReadValue().y : 0f;
+#else
+        float y = Input.mouseScrollDelta.y;
+#endif
+        return Mathf.Abs(y) < 0.01f ? 0 : (y > 0f ? 1 : -1);
+    }
+
     /// <summary>Right mouse button: aim down sights.</summary>
     public static bool AimPressed()
     {

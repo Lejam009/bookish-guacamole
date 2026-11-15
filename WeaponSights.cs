@@ -39,13 +39,53 @@ public class WeaponSights : MonoBehaviour
     [Tooltip("1 = normal. A bipod, stock or good ergonomics: lower. A long, front-heavy or unwieldy gun: higher.")]
     [Min(0f)] public float swayMultiplier = 1f;
 
+    // ---- Attachments (optional: only when the prefab also has WeaponAttachments) ----
+    WeaponAttachments attachments;
+    bool attachmentsLooked;
+
+    WeaponAttachments Attachments
+    {
+        get
+        {
+            if (!attachmentsLooked)
+            {
+                attachmentsLooked = true;
+                attachments = GetComponent<WeaponAttachments>();
+            }
+            return attachments;
+        }
+    }
+
+    /// <summary>The anchor aiming lines up with: the installed optic / rear sight, else this component's Sight Anchor.</summary>
+    Transform ActiveAnchor
+    {
+        get
+        {
+            Transform fromAttachments = Attachments != null ? Attachments.GetAdsAnchor() : null;
+            return fromAttachments != null ? fromAttachments : sightAnchor;
+        }
+    }
+
+    /// <summary>FOV multiplier with the installed optic's magnification applied (4x = a quarter of the field).</summary>
+    public float EffectiveFovMultiplier =>
+        Mathf.Clamp(fovMultiplier / (Attachments != null ? Attachments.CurrentMagnification : 1f), 0.1f, 1f);
+
+    /// <summary>Raise time with attachment weight/ergonomics applied (heavy optics are slower).</summary>
+    public float EffectiveAdsTime =>
+        adsTime * (Attachments != null ? Attachments.TotalStats.adsTimeMultiplier : 1f);
+
+    /// <summary>Sway with attachment effects applied (a good stock steadies the gun).</summary>
+    public float EffectiveSwayMultiplier =>
+        swayMultiplier * (Attachments != null ? Attachments.TotalStats.swayMultiplier : 1f);
+
     /// <summary>
     /// The camera-space pose (position + rotation of this weapon's root) that puts the sights on the eye.
     /// Assumes the weapon root has scale 1, which is what you want for a physics object anyway.
     /// </summary>
     public void GetAimPose(out Vector3 localPos, out Quaternion localRot)
     {
-        if (sightAnchor == null)
+        Transform anchor = ActiveAnchor;
+        if (anchor == null)
         {
             localPos = fallbackPosition;
             localRot = Quaternion.Euler(fallbackEuler);
@@ -54,8 +94,8 @@ public class WeaponSights : MonoBehaviour
 
         // Where the anchor sits relative to the weapon root (independent of where the gun is in the world)
         Quaternion invRoot = Quaternion.Inverse(transform.rotation);
-        Vector3 anchorPos = invRoot * (sightAnchor.position - transform.position);
-        Quaternion anchorRot = invRoot * sightAnchor.rotation;
+        Vector3 anchorPos = invRoot * (anchor.position - transform.position);
+        Quaternion anchorRot = invRoot * anchor.rotation;
 
         // Rotate the gun so the anchor's forward/up match the camera's, then shift it so the anchor is at (0,0,eyeRelief).
         localRot = Quaternion.Inverse(anchorRot);

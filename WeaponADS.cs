@@ -172,7 +172,7 @@ public class WeaponADS : MonoBehaviour
         float mass = slot.HasItem ? slot.HeldData.massKg : 3f;
 
         // ---------------------------------------------------------------- raise / lower spring
-        float baseTime = sights != null ? sights.adsTime : 0.3f;
+        float baseTime = sights != null ? sights.EffectiveAdsTime : 0.3f;
         float time = baseTime * Mathf.Min(2f, 1f + Mathf.Max(0f, mass - 2.5f) * heavySlowdownPerKg);
         if (!wantsAim) time *= lowerTimeFactor;
         float w = 4.5f / Mathf.Max(0.05f, time);
@@ -274,7 +274,7 @@ public class WeaponADS : MonoBehaviour
 
     Vector3 ComputeSway(float dt, float fatigue, float mass)
     {
-        float swayMult = sights != null ? sights.swayMultiplier : 1f;
+        float swayMult = sights != null ? sights.EffectiveSwayMultiplier : 1f;
         float weightFactor = Mathf.Clamp(mass / 3.5f, 0.6f, 1.6f);
         float move = Mathf.Clamp01(motor.PlanarSpeed / Mathf.Max(0.1f, motor.walkSpeed)) * movingSwayGain;
 
@@ -321,7 +321,7 @@ public class WeaponADS : MonoBehaviour
 
     void UpdateCamera(float rawDt)
     {
-        if (sights != null) fovMult = sights.fovMultiplier;
+        if (sights != null) fovMult = sights.EffectiveFovMultiplier;
         fovBlend += (aimBlend - fovBlend) * (1f - Mathf.Exp(-fovFollowSpeed * rawDt));
 
         if (cam == null) return;

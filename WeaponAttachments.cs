@@ -25,9 +25,16 @@ public class DefaultAttachment
 /// stat totals, weight, saving and the ADS anchor.
 ///
 /// Keep the weapon prefab at scale 1 so attachment seating math stays in real meters.
+///
+/// Saving: implements IItemStateful, so HeldItemSlot.CaptureSave() / RestoreSave() keep the loadout
+/// automatically. Assign the Database or saved IDs can't be turned back into attachments.
+/// (Pickupable only finds ONE IItemStateful per prefab. When you add ammo/chamber state later, merge both
+/// into one script's CaptureState/RestoreState, or ask me and I'll combine them.)
 /// </summary>
-public class WeaponAttachments : MonoBehaviour
+public class WeaponAttachments : MonoBehaviour, IItemStateful
 {
+    [Serializable] class StateWrapper { public List<AttachmentSave> attachments = new List<AttachmentSave>(); }
+
     [Header("Setup")]
     public AttachmentDatabase database;
     [Tooltip("Platform tags of this weapon (AR15, AK...). Attachments with compatibleTags need a match.")]
@@ -140,6 +147,11 @@ public class WeaponAttachments : MonoBehaviour
         go.transform.localPosition = Vector3.zero;
         go.transform.localRotation = Quaternion.identity;
 
+        // Attachments are visual parts of the weapon. Physics bits on them would be left switched on while the
+        // gun is held (Pickupable only switches off what existed at spawn) and shove the player around.
+        foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) Destroy(c);
+        foreach (Rigidbody r in go.GetComponentsInChildren<Rigidbody>(true)) Destroy(r);
+
         AttachmentPrefabInfo info = go.GetComponent<AttachmentPrefabInfo>();
         ComputeSeat(go.transform, info, out Vector3 seatPos, out Quaternion seatRot);
 
@@ -155,10 +167,15 @@ public class WeaponAttachments : MonoBehaviour
         if (animate)
         {
             // Start displaced and slightly twisted, then spring into place.
+            // The spring is critically damped (never overshoots into the gun) and the part slides straight in
+            // along the slot's insert direction.
+            float twist = slot.installTwistDegrees;
             go.transform.localPosition = targetPos + slot.insertOffset;
             go.transform.localRotation = seatRot * Quaternion.Euler(
-                UnityEngine.Random.Range(-4f, 4f), UnityEngine.Random.Range(-4f, 4f), UnityEngine.Random.Range(-6f, 6f));
-            go.AddComponent<AttachmentSpringMover>().MoveTo(targetPos, seatRot, false, () => Settled?.Invoke(slot));
+                UnityEngine.Random.Range(-twist, twist), UnityEngine.Random.Range(-twist, twist), UnityEngine.Random.Range(-twist, twist));
+            AttachmentSpringMover mover = go.AddComponent<AttachmentSpringMover>();
+            mover.Configure(slot.installStiffness, slot.installDampingRatio);
+            mover.MoveTo(targetPos, seatRot, false, () => Settled?.Invoke(slot));
         }
         else
         {
@@ -194,8 +211,7 @@ public class WeaponAttachments : MonoBehaviour
         slot.RailIndex = next;
         AttachmentSpringMover mover = slot.Instance.GetComponent<AttachmentSpringMover>();
         if (mover == null) mover = slot.Instance.AddComponent<AttachmentSpringMover>();
-        mover.stiffness = 420f;   // rail slides are crisper than a full install
-        mover.damping = 30f;
+        mover.Configure(420f, 1.1f);   // rail slides are crisper than a full install, still no overshoot
         mover.MoveTo(TargetPosition(slot, next), slot.seatRot, false, () => Settled?.Invoke(slot));
         return true;
     }
@@ -213,8 +229,7 @@ public class WeaponAttachments : MonoBehaviour
         {
             AttachmentSpringMover mover = go.GetComponent<AttachmentSpringMover>();
             if (mover == null) mover = go.AddComponent<AttachmentSpringMover>();
-            mover.stiffness = 180f;
-            mover.damping = 22f;
+            mover.Configure(180f, 1.1f);
             mover.MoveTo(go.transform.localPosition + slot.insertOffset, go.transform.localRotation, true);
         }
         else
@@ -272,8 +287,8 @@ public class WeaponAttachments : MonoBehaviour
 
     /// <summary>
     /// Where the camera should line up when aiming: the first installed optic, otherwise the
-    /// rear iron sight. Moves with the attachment, so sliding an optic on the rail changes eye relief.
-    /// Returns null if nothing provides an ADS point (fall back to your weapon's default ADS pose).
+    /// rear iron sight. WeaponSights uses it automatically.
+    /// Returns null if nothing provides an ADS point (WeaponSights then uses its own Sight Anchor).
     /// </summary>
     public Transform GetAdsAnchor()
     {
@@ -309,6 +324,16 @@ public class WeaponAttachments : MonoBehaviour
     }
 
     // ------------------------------------------------------------------ saving
+
+    // ---- IItemStateful (HeldItemSlot saves/loads this with the held item) ----
+    public string CaptureState() => JsonUtility.ToJson(new StateWrapper { attachments = Capture() });
+
+    public void RestoreState(string state)
+    {
+        if (string.IsNullOrEmpty(state)) return;
+        StateWrapper wrapper = JsonUtility.FromJson<StateWrapper>(state);
+        Restore(wrapper != null ? wrapper.attachments : null);
+    }
 
     public List<AttachmentSave> Capture()
     {
