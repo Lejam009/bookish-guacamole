@@ -133,6 +133,10 @@ public class HeldItemSlot : MonoBehaviour
     Vector3 aimPos, aimSway;
     Quaternion aimRot = Quaternion.identity;
 
+    // Recoil pushed in by WeaponRecoil: the gun rotates and slides about a point near the shoulder
+    Vector3 recoilPivotInItem, recoilPos;
+    Quaternion recoilRot = Quaternion.identity;
+
     void Awake()
     {
         if (motor == null) motor = GetComponent<PlayerMotor>();
@@ -214,6 +218,18 @@ public class HeldItemSlot : MonoBehaviour
         aimPos = localPos;
         aimRot = localRot;
         aimSway = swayEuler;
+    }
+
+    /// <summary>
+    /// Called every frame by WeaponRecoil. The whole gun is rotated by localRot about pivotInItem (a point on the
+    /// item, in the item's own space: the stock / shoulder contact) and then moved by localOffset (camera space).
+    /// Zero offset and identity rotation = no recoil.
+    /// </summary>
+    public void SetRecoilPose(Vector3 pivotInItem, Vector3 localOffset, Quaternion localRot)
+    {
+        recoilPivotInItem = pivotInItem;
+        recoilPos = localOffset;
+        recoilRot = localRot;
     }
 
     public ItemSaveData CaptureSave()
@@ -483,6 +499,12 @@ public class HeldItemSlot : MonoBehaviour
         Vector3 rotEuler = (rotOff + new Vector3(breath * breathPitch * fatigue, 0f, swing * bobRoll * bobScale)) * steady
                          + aimSway * a;
         Quaternion localRot = Quaternion.Euler(rotEuler) * lr;
+
+        // Recoil: the gun twists about the shoulder point. The pivot is measured on the pose WITHOUT recoil,
+        // so rotating about it can never feed back into itself.
+        Vector3 recoilPivot = lp + localRot * recoilPivotInItem;
+        lp = recoilPivot + recoilRot * (lp - recoilPivot) + recoilPos;
+        localRot = recoilRot * localRot;
 
         // Where the hands WOULD hold the item this frame (camera space). Inspect mode eases back to this when it ends.
         PoseLocalPos = lp;

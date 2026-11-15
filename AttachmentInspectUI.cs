@@ -187,10 +187,17 @@ public class AttachmentInspectUI : MonoBehaviour
             return;
         }
 
-        var options = new List<AttachmentData>();
+        // One row per attachment type, except magazines: every magazine is listed on its own with its own rounds.
+        var options = new List<MenuOption>();
         if (inventory != null)
             foreach (AttachmentData d in inventory.Owned(menuSlot.category))
-                if (weapon.CanInstall(menuSlot, d, out _)) options.Add(d);
+            {
+                if (!weapon.CanInstall(menuSlot, d, out _)) continue;
+                if (d.category == AttachmentCategory.Magazine)
+                    foreach (MagazineContents m in inventory.MagazinesOf(d)) options.Add(new MenuOption { data = d, mag = m });
+                else
+                    options.Add(new MenuOption { data = d });
+            }
 
         const float w = 360f, rowH = 28f;
         int rows = (menuSlot.Installed != null ? 1 : 0) + Mathf.Max(1, options.Count);
@@ -206,8 +213,9 @@ public class AttachmentInspectUI : MonoBehaviour
         {
             if (GUI.Button(new Rect(menuRect.x + 6f, y, w - 12f, rowH - 2f), $"Remove {menuSlot.Installed.displayName}", buttonStyle))
             {
+                MagazineContents removedRounds = weapon.GetMagazineContents(menuSlot); // read before the magazine leaves
                 AttachmentData removed = weapon.Remove(menuSlot);
-                if (removed != null && inventory != null) inventory.Add(removed);
+                GiveBack(removed, removedRounds);
                 CloseMenu();
                 return;
             }
@@ -217,22 +225,37 @@ public class AttachmentInspectUI : MonoBehaviour
         if (options.Count == 0)
             GUI.Label(new Rect(menuRect.x + 10f, y, w - 20f, rowH), "Nothing compatible in your stash.", labelStyle);
 
-        foreach (AttachmentData d in options)
+        foreach (MenuOption o in options)
         {
-            string text = $"{d.displayName}  x{inventory.Count(d)}   [{d.stats.Summary()}]";
+            AttachmentData d = o.data;
+            string text = o.mag != null
+                ? $"{d.displayName}   {o.mag.Count}/{o.mag.capacity} rounds   [{d.stats.Summary()}]"
+                : $"{d.displayName}  x{inventory.Count(d)}   [{d.stats.Summary()}]";
             if (GUI.Button(new Rect(menuRect.x + 6f, y, w - 12f, rowH - 2f), text, buttonStyle))
             {
-                if (inventory.TryTake(d))
+                bool taken = o.mag != null ? inventory.TakeMagazine(d, o.mag) : inventory.TryTake(d);
+                if (taken)
                 {
                     AttachmentData previous = menuSlot.Installed;
-                    if (weapon.Install(menuSlot, d)) { if (previous != null) inventory.Add(previous); }
-                    else inventory.Add(d);
+                    MagazineContents previousRounds = weapon.GetMagazineContents(menuSlot); // the old magazine keeps its rounds
+                    if (weapon.Install(menuSlot, d, -1, true, o.mag)) GiveBack(previous, previousRounds);
+                    else GiveBack(d, o.mag);
                 }
                 CloseMenu();
                 return;
             }
             y += rowH;
         }
+    }
+
+    struct MenuOption { public AttachmentData data; public MagazineContents mag; }
+
+    /// <summary>Returns a removed attachment to the stash. A magazine goes back as the same magazine, rounds and all.</summary>
+    void GiveBack(AttachmentData data, MagazineContents rounds)
+    {
+        if (data == null || inventory == null) return;
+        if (data.category == AttachmentCategory.Magazine && rounds != null) inventory.AddMagazine(data, rounds);
+        else inventory.Add(data);
     }
 
     void DrawStatsPanel()

@@ -21,14 +21,14 @@ public class Pickupable : MonoBehaviour
     bool[] colliderWasEnabled;
     RigidbodyInterpolation originalInterpolation;
     CollisionDetectionMode originalDetection;
-    IItemStateful stateful;
+    IItemStateful[] statefuls;
 
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
         colliders = GetComponentsInChildren<Collider>(true);
         colliderWasEnabled = new bool[colliders.Length];
-        stateful = GetComponent<IItemStateful>();
+        statefuls = GetComponents<IItemStateful>();
         originalInterpolation = rb.interpolation;
         originalDetection = rb.collisionDetectionMode;
         if (data != null) rb.mass = data.massKg;
@@ -91,11 +91,55 @@ public class Pickupable : MonoBehaviour
         }
     }
 
-    public string CaptureState() => stateful != null ? stateful.CaptureState() : null;
+    [System.Serializable] class StatePart { public string type; public string data; }
+    [System.Serializable] class StateEnvelope { public bool multi = true; public System.Collections.Generic.List<StatePart> parts = new System.Collections.Generic.List<StatePart>(); }
+
+    /// <summary>
+    /// Saves every IItemStateful on the prefab (attachments AND firearm ammo/chamber state).
+    /// With a single stateful component the raw string is kept, so old saves still load.
+    /// </summary>
+    public string CaptureState()
+    {
+        if (statefuls == null || statefuls.Length == 0) return null;
+        if (statefuls.Length == 1) return statefuls[0].CaptureState();
+
+        var env = new StateEnvelope();
+        foreach (IItemStateful s in statefuls)
+            env.parts.Add(new StatePart { type = s.GetType().Name, data = s.CaptureState() });
+        return JsonUtility.ToJson(env);
+    }
 
     public void RestoreState(string state)
     {
-        if (stateful != null && !string.IsNullOrEmpty(state)) stateful.RestoreState(state);
+        if (statefuls == null || statefuls.Length == 0 || string.IsNullOrEmpty(state)) return;
+
+        StateEnvelope env = null;
+        if (statefuls.Length > 1 && state.Contains("\"multi\""))
+        {
+            try { env = JsonUtility.FromJson<StateEnvelope>(state); } catch (System.ArgumentException) { }
+        }
+
+        if (env == null || !env.multi)
+        {
+            // Old single-component save (or only one component): give it to the attachments (or the only component).
+            IItemStateful target = statefuls[0];
+            foreach (IItemStateful c in statefuls) if (c is WeaponAttachments) { target = c; break; }
+            target.RestoreState(state);
+            return;
+        }
+
+        // Attachments first (they swap the magazine), then everything else (the firearm sets the magazine contents last).
+        foreach (IItemStateful s in statefuls)
+            if (s is WeaponAttachments) RestorePart(env, s);
+        foreach (IItemStateful s in statefuls)
+            if (!(s is WeaponAttachments)) RestorePart(env, s);
+    }
+
+    static void RestorePart(StateEnvelope env, IItemStateful s)
+    {
+        string type = s.GetType().Name;
+        foreach (StatePart part in env.parts)
+            if (part.type == type && !string.IsNullOrEmpty(part.data)) { s.RestoreState(part.data); return; }
     }
 
     // ---- Unity 6 renamed Rigidbody.velocity; these keep every script version-safe ----

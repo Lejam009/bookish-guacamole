@@ -28,8 +28,8 @@ public class DefaultAttachment
 ///
 /// Saving: implements IItemStateful, so HeldItemSlot.CaptureSave() / RestoreSave() keep the loadout
 /// automatically. Assign the Database or saved IDs can't be turned back into attachments.
-/// (Pickupable only finds ONE IItemStateful per prefab. When you add ammo/chamber state later, merge both
-/// into one script's CaptureState/RestoreState, or ask me and I'll combine them.)
+/// (Pickupable saves every IItemStateful on the prefab together, so Firearm's ammo/chamber state
+/// and this loadout are both kept.)
 /// </summary>
 public class WeaponAttachments : MonoBehaviour, IItemStateful
 {
@@ -39,12 +39,20 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
     public AttachmentDatabase database;
     [Tooltip("Platform tags of this weapon (AR15, AK...). Attachments with compatibleTags need a match.")]
     public string[] platformTags;
-    [Tooltip("Weight of the bare weapon in kg.")]
+    [Tooltip("Only used when the weapon has no ItemData. Normally the bare weapon's weight comes from the ItemData on its Pickupable.")]
     public float baseWeightKg = 3.4f;
     [Tooltip("Player-driven changes (inspect UI) are only allowed in a SafeZone.")]
     public bool requireSafeZoneToModify = true;
     [Tooltip("Installed at start if no save was restored. Great for stock iron sights.")]
     public List<DefaultAttachment> defaultLoadout = new List<DefaultAttachment>();
+
+    /// <summary>True if the default loadout puts something in this slot at start (so it will be installed by the weapon itself).</summary>
+    public bool HasDefaultFor(string slotID)
+    {
+        foreach (DefaultAttachment d in defaultLoadout)
+            if (d.data != null && d.slotID == slotID) return true;
+        return false;
+    }
 
     public IReadOnlyList<AttachmentSlot> Slots => slots;
     public AttachmentStats TotalStats { get; private set; } = new AttachmentStats();
@@ -100,6 +108,13 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
 
         if (!TagsMatch(slot, data)) { reason = "Incompatible mount or platform."; return false; }
 
+        // Magazines must be the weapon's caliber.
+        if (data.category == AttachmentCategory.Magazine)
+        {
+            Firearm firearm = GetComponent<Firearm>();
+            if (firearm != null && !firearm.AcceptsMagazineType(data, out reason)) return false;
+        }
+
         if (slot.isRail && slot.railSlotCount - data.railSlotsOccupied < 0)
         { reason = "Too long for this rail."; return false; }
 
@@ -125,7 +140,8 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
     // ------------------------------------------------------------------ install / remove
 
     /// <summary>Installs (replacing whatever is in the slot). Does NOT check the safe zone; the UI does.</summary>
-    public bool Install(AttachmentSlot slot, AttachmentData data, int railIndex = -1, bool animate = true)
+    /// <param name="magazine">Magazines only: the exact magazine (with its rounds) being put in. Null = a brand-new one.</param>
+    public bool Install(AttachmentSlot slot, AttachmentData data, int railIndex = -1, bool animate = true, MagazineContents magazine = null)
     {
         if (!CanInstall(slot, data, out string reason))
         {
@@ -151,6 +167,15 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
         // gun is held (Pickupable only switches off what existed at spawn) and shove the player around.
         foreach (Collider c in go.GetComponentsInChildren<Collider>(true)) Destroy(c);
         foreach (Rigidbody r in go.GetComponentsInChildren<Rigidbody>(true)) Destroy(r);
+
+        // A magazine model carries its own rounds, so each magazine is tracked individually.
+        if (data.category == AttachmentCategory.Magazine)
+        {
+            MagazineItem item = go.GetComponent<MagazineItem>();
+            if (item == null) item = go.AddComponent<MagazineItem>();
+            Firearm gun = GetComponent<Firearm>();
+            item.contents = magazine ?? MagazineItem.CreateFresh(data, gun != null ? gun.fallbackMagazineCapacity : 30);
+        }
 
         AttachmentPrefabInfo info = go.GetComponent<AttachmentPrefabInfo>();
         ComputeSeat(go.transform, info, out Vector3 seatPos, out Quaternion seatRot);
@@ -188,7 +213,16 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
         return true;
     }
 
-    /// <summary>Removes whatever is in the slot and returns it (so you can give it back to the inventory).</summary>
+    /// <summary>The rounds inside the magazine currently installed in a slot (null if the slot is empty or isn't a magazine).</summary>
+    public MagazineContents GetMagazineContents(AttachmentSlot slot)
+    {
+        if (slot == null || slot.Instance == null) return null;
+        MagazineItem item = slot.Instance.GetComponent<MagazineItem>();
+        return item != null ? item.contents : null;
+    }
+
+    /// <summary>Removes whatever is in the slot and returns it (so you can give it back to the inventory).
+    /// For a magazine, read its rounds with GetMagazineContents BEFORE calling this.</summary>
     public AttachmentData Remove(AttachmentSlot slot, bool animate = true)
     {
         if (slot == null || slot.Installed == null) return null;
@@ -265,7 +299,9 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
     void Recalculate()
     {
         var t = new AttachmentStats();
-        float weight = baseWeightKg;
+        // The bare weapon weighs what its ItemData says; the attachments add to that.
+        Pickupable pickup = GetComponent<Pickupable>();
+        float weight = pickup != null && pickup.data != null ? pickup.data.massKg : baseWeightKg;
 
         foreach (AttachmentSlot s in slots)
         {

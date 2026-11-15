@@ -31,6 +31,11 @@ public class MouseLook : MonoBehaviour
     /// re-lock the cursor. Set by WeaponInspect.
     /// </summary>
     [HideInInspector] public bool FreeCursorMode;
+    /// <summary>
+    /// Temporary extra rotation (degrees: x = pitch, y = yaw, z = roll) added on top of where the mouse points,
+    /// then forgotten. WeaponRecoil sets it every frame. It never changes the body's heading or the stored aim.
+    /// </summary>
+    [HideInInspector] public Vector3 ViewKickEuler;
 
     [Header("Head Spring")]
     public float stiffness = 110f;
@@ -151,6 +156,9 @@ public class MouseLook : MonoBehaviour
         Vector3 eye = motor.transform.position + Vector3.up * motor.EyeHeight;
         Vector3 offset = springPos + new Vector3(bobX, bobY, 0f);
         transform.position = eye + yawRot * offset;
-        transform.rotation = Quaternion.Euler(pitch + breath * breathPitch * fatigue, yaw, roll);
+        transform.rotation = Quaternion.Euler(
+            pitch + breath * breathPitch * fatigue + ViewKickEuler.x,
+            yaw + ViewKickEuler.y,
+            roll + ViewKickEuler.z);
     }
 }

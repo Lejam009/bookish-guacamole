@@ -66,6 +66,10 @@ public class WeaponSights : MonoBehaviour
         }
     }
 
+    /// <summary>The anchor the sights line up through right now (installed optic / rear sight, else Sight Anchor). Null if none.
+    /// Firearm uses its height above the bore to zero the bullet to the sights.</summary>
+    public Transform CurrentSightAnchor => ActiveAnchor;
+
     /// <summary>FOV multiplier with the installed optic's magnification applied (4x = a quarter of the field).</summary>
     public float EffectiveFovMultiplier =>
         Mathf.Clamp(fovMultiplier / (Attachments != null ? Attachments.CurrentMagnification : 1f), 0.1f, 1f);

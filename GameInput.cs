@@ -182,4 +182,30 @@ public static class GameInput
         return Input.GetMouseButton(1);
 #endif
     }
+
+    /// <summary>Left mouse button pressed this frame: start pulling the trigger.</summary>
+    public static bool FirePressed() => ClickPressed();
+
+    /// <summary>Left mouse button held: trigger pulled.</summary>
+    public static bool FireHeld() => ClickHeld();
+
+    /// <summary>B: flick the selector switch (Safe / Semi / Burst / Auto).</summary>
+    public static bool FireModePressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.bKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.B);
+#endif
+    }
+
+    /// <summary>T: work the charging handle / bolt.</summary>
+    public static bool RackPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.tKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.T);
+#endif
+    }
 }

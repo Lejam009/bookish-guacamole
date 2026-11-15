@@ -90,6 +90,16 @@ public class AttachmentData : ScriptableObject
     [Header("Stats")]
     public AttachmentStats stats = new AttachmentStats();
 
+    [Header("Magazine only")]
+    [Tooltip("Caliber of the cartridges this magazine holds, written exactly like AmmoData.caliber (e.g. 5.56x45). " +
+             "A magazine only fits a weapon of the same caliber, and only takes rounds of that caliber.")]
+    public string magazineCaliber = "";
+    [Tooltip("Ammo a brand-new magazine of this type comes with when it is installed (e.g. from the inspect picker). " +
+             "Empty = the magazine comes EMPTY and has to be loaded with rounds.")]
+    public AmmoData loadedAmmo;
+    [Tooltip("How many of those rounds. -1 = full (the magazine's capacity).")]
+    public int loadedRounds = -1;
+
     [Header("Optic only")]
     [Tooltip("1 = no magnification (red dot / iron sight).")]
     public float magnification = 1f;
