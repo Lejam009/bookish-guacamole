@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -11,12 +12,133 @@ using UnityEngine;
 /// A magazine that is NOT on a gun (in the player's stash) has no model, so the stash (AttachmentInventory) keeps the same
 /// MagazineContents object for it. The object just moves between the gun and the stash; it is never copied or recreated,
 /// which is what keeps the count right.
+///
+/// This script also covers a magazine lying on the ground (MagazineItem.Drop): it falls out of a gun, keeps its rounds, and
+/// you walk up and press F to pick it up into your stash. Nothing to set up for that either.
 /// </summary>
 [DisallowMultipleComponent]
 public class MagazineItem : MonoBehaviour
 {
     [Tooltip("Live contents. Read-only in practice: look at it while playing to see what is inside.")]
     public MagazineContents contents = new MagazineContents();
+
+    // ================================================================== lying on the ground
+
+    /// <summary>Every magazine currently lying on the ground.</summary>
+    public static readonly List<MagazineItem> Dropped = new List<MagazineItem>();
+
+    [Header("When lying on the ground")]
+    [Tooltip("Which magazine this is (set when it is dropped).")]
+    public AttachmentData data;
+    [Tooltip("How close (metres) the player must be to pick it up.")]
+    public float pickupRadius = 2f;
+
+    bool isDropped;
+    AttachmentInventory pickupInventory;
+    float droppedAt;
+    bool showPrompt;
+    GUIStyle promptStyle;
+
+    /// <summary>True while this magazine is a loose object on the ground.</summary>
+    public bool IsDropped => isDropped;
+
+    /// <summary>Spawns the magazine model with physics at a pose, rounds kept. Returns null (and stows it) if the asset has no prefab.</summary>
+    public static MagazineItem Drop(AttachmentData data, MagazineContents contents, Vector3 position, Quaternion rotation,
+                                    Vector3 scale, Vector3 impulse, AttachmentInventory inventory, Collider[] ignoreColliders)
+    {
+        if (data == null || contents == null) return null;
+        if (data.prefab == null)
+        {
+            if (inventory != null) inventory.AddMagazine(data, contents);
+            return null;
+        }
+
+        GameObject go = Object.Instantiate(data.prefab, position, rotation);
+        go.name = data.attachmentID + " (dropped)";
+        go.transform.localScale = scale;
+
+        // Start clean: whatever physics the prefab had is replaced by one box that fits the model.
+        foreach (Collider c in go.GetComponentsInChildren<Collider>()) Object.Destroy(c);
+        foreach (Rigidbody r in go.GetComponentsInChildren<Rigidbody>()) Object.Destroy(r);
+
+        Bounds local = new Bounds(Vector3.zero, Vector3.one * 0.05f);
+        bool has = false;
+        foreach (Renderer r in go.GetComponentsInChildren<Renderer>())
+        {
+            Bounds wb = r.bounds;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 corner = wb.center + new Vector3(
+                    (i & 1) == 0 ? -wb.extents.x : wb.extents.x,
+                    (i & 2) == 0 ? -wb.extents.y : wb.extents.y,
+                    (i & 4) == 0 ? -wb.extents.z : wb.extents.z);
+                Vector3 lc = go.transform.InverseTransformPoint(corner);
+                if (!has) { local = new Bounds(lc, Vector3.zero); has = true; }
+                else local.Encapsulate(lc);
+            }
+        }
+        BoxCollider box = go.AddComponent<BoxCollider>();
+        box.center = local.center;
+        box.size = Vector3.Max(local.size, Vector3.one * 0.01f);
+
+        Rigidbody rb = go.AddComponent<Rigidbody>();
+        rb.mass = 0.25f;
+        rb.AddForce(impulse, ForceMode.VelocityChange);
+
+        // The magazine starts right next to the player: it must not shove them around.
+        if (ignoreColliders != null)
+            foreach (Collider c in ignoreColliders)
+                if (c != null) Physics.IgnoreCollision(box, c);
+
+        MagazineItem item = go.GetComponent<MagazineItem>();
+        if (item == null) item = go.AddComponent<MagazineItem>();
+        item.data = data;
+        item.contents = contents;
+        item.pickupInventory = inventory;
+        item.droppedAt = Time.time;
+        item.isDropped = true;
+        Dropped.Add(item);
+        return item;
+    }
+
+    void OnDestroy() => Dropped.Remove(this);
+
+    void Update()
+    {
+        showPrompt = false;
+        if (!isDropped || pickupInventory == null || Time.time - droppedAt < 0.5f) return;
+        if (NearestDropped(pickupInventory.transform.position, pickupRadius) != this) return;
+
+        showPrompt = true;
+        if (GameInput.InteractPressed())
+        {
+            pickupInventory.AddMagazine(data, contents);
+            Destroy(gameObject);
+        }
+    }
+
+    static MagazineItem NearestDropped(Vector3 from, float radius)
+    {
+        MagazineItem best = null;
+        float bestDist = radius;
+        foreach (MagazineItem m in Dropped)
+        {
+            float dist = Vector3.Distance(from, m.transform.position);
+            if (dist <= bestDist) { bestDist = dist; best = m; }
+        }
+        return best;
+    }
+
+    void OnGUI()
+    {
+        if (!showPrompt) return;
+        if (promptStyle == null)
+            promptStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, alignment = TextAnchor.MiddleCenter };
+        GUI.Label(new Rect(Screen.width * 0.5f - 200f, Screen.height * 0.62f, 400f, 30f),
+                  $"F: pick up magazine ({contents.Count}/{contents.capacity})", promptStyle);
+    }
+
+    // ================================================================== new magazines
 
     /// <summary>A brand-new magazine of this type, filled the way the asset says (Loaded Ammo / Loaded Rounds, or empty).</summary>
     public static MagazineContents CreateFresh(AttachmentData data, int fallbackCapacity = 30)

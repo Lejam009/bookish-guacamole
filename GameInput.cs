@@ -199,13 +199,23 @@ public static class GameInput
 #endif
     }
 
-    /// <summary>T: work the charging handle / bolt.</summary>
-    public static bool RackPressed()
+    /// <summary>T: press the magazine release (only used in reload interaction mode).</summary>
+    public static bool MagReleasePressed()
     {
 #if ENABLE_INPUT_SYSTEM
         return Keyboard.current != null && Keyboard.current.tKey.wasPressedThisFrame;
 #else
         return Input.GetKeyDown(KeyCode.T);
+#endif
+    }
+
+    /// <summary>Y: press the bolt catch while the mouse is busy dragging the charging handle (locks the bolt open).</summary>
+    public static bool BoltCatchPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.yKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.Y);
 #endif
     }
 }

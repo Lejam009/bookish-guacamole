@@ -81,6 +81,21 @@ public class Firearm : MonoBehaviour, IItemStateful
     [Tooltip("Optional. The bolt carrier / slide. It is moved along Bolt Axis by a little spring simulation.")]
     public Transform boltCarrier;
 
+    [Header("Reload Interaction Hotspots (optional)")]
+    [Tooltip("Clickable spots used in reload interaction mode (hold R to enter, outside a safe zone). For each one: make an EMPTY CHILD of " +
+             "the weapon at the part, add a Box Collider sized over it, and add an InspectHotspot. Then drag that object here. " +
+             "Bolt catch: click to release a locked-back bolt.")]
+    public InspectHotspot boltCatchHotspot;
+    [Tooltip("Magazine release button: click to unlock the magazine (T does the same while you're holding the magazine with the mouse).")]
+    public InspectHotspot magazineReleaseHotspot;
+    [Tooltip("Fire selector switch: click to cycle the fire mode, same as pressing B.")]
+    public InspectHotspot selectorHotspot;
+    [Tooltip("Charging handle: press and drag it back along the bolt's travel to rack the gun. Needs a Bolt Carrier assigned so there is something to slide. " +
+             "(The magazine itself is clicked through its magazine slot's own hitbox: size that over the magazine.)")]
+    public InspectHotspot chargingHandleHotspot;
+    [Tooltip("How far back (0 to 1 of the bolt travel) the handle has to be pulled before the gun ejects what's in the chamber.")]
+    [Range(0.5f, 1f)] public float boltDragEjectAt = 0.85f;
+
     [Header("Bolt Catch / Bolt Release (visual)")]
     [Tooltip("Optional. The bolt catch lever (the AR-15's lever on the left of the receiver, the 1911's slide stop). " +
              "It swings up to its Open Angle when the bolt locks back, and drops down when the bolt is released or closed.")]
@@ -169,6 +184,16 @@ public class Firearm : MonoBehaviour, IItemStateful
     public float boltTravel = 0.07f;
     [Tooltip("Local direction the carrier moves when it goes back (toward the shooter).")]
     public Vector3 boltAxis = Vector3.back;
+    [Tooltip("Optional. The charging handle, when it is a SEPARATE part from the bolt carrier. It can sit anywhere in the hierarchy, even as the parent " +
+             "of the bolt carrier. When you drag it back it takes the carrier with it. Leave empty if the handle IS the carrier (or has none).")]
+    public Transform chargingHandle;
+    [Tooltip("Metres the handle slides back when pulled. 0 = same as Bolt Travel.")]
+    public float chargingHandleTravel = 0f;
+    [Tooltip("OFF (AR-15, bolt-actions): the handle only moves while you hold it and springs forward when you let go. The carrier moves on its own, so the " +
+             "handle stays still while firing and while the bolt is locked open.\nON (AK-47): the handle is fixed to the carrier and moves with it, also when firing.")]
+    public bool chargingHandleReciprocates = false;
+    [Tooltip("How quickly the handle springs back forward after you let go (seconds, smaller = faster).")]
+    public float chargingHandleReturnTime = 0.07f;
     [Tooltip("Speed (m/s) the carrier is thrown back at when a round is fired.")]
     public float boltCycleSpeed = 4f;
     public float boltStiffness = 1800f;
@@ -192,7 +217,7 @@ public class Firearm : MonoBehaviour, IItemStateful
     public bool startWithVirtualMagazine = true;
 
     [Header("Sounds (optional)")]
-    public AudioClip fireSound;
+    public AudioClip[] fireSounds;
     public AudioClip dryFireSound;
     public AudioClip rackSound;
     [Range(0f, 1f)] public float soundVolume = 1f;
@@ -315,7 +340,12 @@ public class Firearm : MonoBehaviour, IItemStateful
     int burstRemaining;
 
     bool startFillPending;
+    float boltDragTarget;
+    bool boltDragPassed, boltDragLock;
     Vector3 boltRestLocal;
+    Vector3 boltRestRoot, handleRestRoot, handleRestLocal;
+    float handlePos, handleVel, boltDragFloor;
+    bool handleCoupled; // after a release the handle rides the carrier home instead of springing on its own
     Quaternion boltCatchRestLocal = Quaternion.identity;
     float boltCatchAngle, boltCatchVel;
     bool boltCatchSnap = true;
@@ -332,7 +362,18 @@ public class Firearm : MonoBehaviour, IItemStateful
         attachments = GetComponent<WeaponAttachments>();
         sights = GetComponent<WeaponSights>();
         if (attachments != null) attachments.Changed += OnAttachmentChanged;
-        if (boltCarrier != null) boltRestLocal = boltCarrier.localPosition;
+        if (boltCarrier != null)
+        {
+            boltRestLocal = boltCarrier.localPosition;
+            // Remembered relative to the WEAPON, not the carrier's parent: a carrier that is a child of the handle must not
+            // inherit the handle's movement on top of its own.
+            boltRestRoot = transform.InverseTransformPoint(boltCarrier.position);
+        }
+        if (chargingHandle != null && chargingHandle != boltCarrier)
+        {
+            handleRestLocal = chargingHandle.localPosition;
+            handleRestRoot = transform.InverseTransformPoint(chargingHandle.position);
+        }
         if (selectorSwitch != null) selectorRestLocal = selectorSwitch.localRotation;
         if (boltCatch != null) boltCatchRestLocal = boltCatch.localRotation;
         Mode = ValidMode(startMode);
@@ -548,7 +589,13 @@ public class Firearm : MonoBehaviour, IItemStateful
         if (boltCarrier != null) boltVel += boltCycleSpeed;
         if (action == ActionType.SelfLoading) CycleAction();
 
-        PlayClip(fireSound);
+        // Play a random sound from the array if any clips are assigned
+        if (fireSounds != null && fireSounds.Length > 0)
+        {
+            AudioClip randomClip = fireSounds[UnityEngine.Random.Range(0, fireSounds.Length)];
+            PlayClip(randomClip);
+        }
+
         onFired?.Invoke();
         Fired?.Invoke(new ShotInfo
         {
@@ -759,6 +806,163 @@ public class Firearm : MonoBehaviour, IItemStateful
         return true;
     }
 
+    // ---------------------------------------------------------------- charging handle (dragged by the player)
+
+    /// <summary>True while the player holds the charging handle.</summary>
+    public bool BoltDragging { get; private set; }
+    /// <summary>How far back the bolt is right now: 0 = in battery, 1 = fully back.</summary>
+    public float BoltFraction => boltTravel > 0.0001f ? Mathf.Clamp01(boltPos / boltTravel) : 0f;
+    /// <summary>World position of the bolt carrier when closed.</summary>
+    public Vector3 BoltRestWorld => boltCarrier == null ? transform.position : transform.TransformPoint(boltRestRoot);
+
+    // The part the player's hand actually pulls: the separate charging handle if there is one, otherwise the carrier itself.
+    bool HandleActive => chargingHandle != null && chargingHandle != boltCarrier;
+    float HandleTravel => chargingHandleTravel > 0.0001f ? chargingHandleTravel : boltTravel;
+    /// <summary>How far back the part the hand pulls is: 0 = forward, 1 = fully back.</summary>
+    public float HandleFraction => HandleActive ? Mathf.Clamp01(handlePos / Mathf.Max(0.0001f, HandleTravel)) : BoltFraction;
+    /// <summary>World position of the part the hand pulls, when forward. The drag runs along a line from here.</summary>
+    public Vector3 DragRestWorld => HandleActive ? transform.TransformPoint(handleRestRoot) : BoltRestWorld;
+    /// <summary>World direction the hand pulls it.</summary>
+    public Vector3 DragAxisWorld
+    {
+        get
+        {
+            Vector3 a = boltAxis.sqrMagnitude > 0.0001f ? boltAxis.normalized : Vector3.back;
+            Transform p = AxisFrame;
+            return p != null ? p.TransformDirection(a).normalized : a;
+        }
+    }
+    /// <summary>Full pull length of the part the hand pulls, in world metres.</summary>
+    public float DragTravelWorld
+    {
+        get
+        {
+            if (!HandleActive) return BoltTravelWorld;
+            return WorldOffset(HandleTravel).magnitude;
+        }
+    }
+    /// <summary>World direction the carrier slides when it goes back.</summary>
+    public Vector3 BoltAxisWorld
+    {
+        get
+        {
+            Vector3 a = boltAxis.sqrMagnitude > 0.0001f ? boltAxis.normalized : Vector3.back;
+            return boltCarrier != null && boltCarrier.parent != null ? boltCarrier.parent.TransformDirection(a).normalized : a;
+        }
+    }
+    /// <summary>Full bolt travel in world metres.</summary>
+    public float BoltTravelWorld
+    {
+        get
+        {
+            return boltCarrier != null ? WorldOffset(boltTravel).magnitude : boltTravel;
+        }
+    }
+
+    /// <summary>The player grabs the charging handle.</summary>
+    public bool BeginBoltDrag()
+    {
+        if (boltCarrier == null || BoltDragging || IsBusy) return false;
+        BoltDragging = true;
+        boltDragTarget = HandleFraction;
+        boltDragFloor = BoltOpen ? BoltFraction : 0f; // a bolt locked back stays back while the handle is pulled
+        boltDragPassed = false;
+        boltDragLock = false;
+        return true;
+    }
+
+    /// <summary>Where the hand has pulled the handle (0 = closed, 1 = fully back). Past Bolt Drag Eject At the chamber is cleared.</summary>
+    public void SetBoltDrag(float fraction)
+    {
+        if (!BoltDragging) return;
+        boltDragTarget = Mathf.Clamp01(fraction);
+        if (!boltDragPassed && boltDragTarget >= boltDragEjectAt)
+        {
+            boltDragPassed = true;
+            if (!BoltOpen) EjectChamber();   // a live round or a case is thrown out of the ejection port
+            HammerCocked = true;             // the carrier cocks the hammer on its way back
+            PlayClip(rackSound);
+            StateChanged?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// The player lets go of the handle. If it was pulled all the way back the bolt now goes forward and strips a round from the
+    /// magazine (or stays locked open if the bolt catch was pressed, or the magazine is empty). A half pull just springs home.
+    /// </summary>
+    public void EndBoltDrag()
+    {
+        if (!BoltDragging) return;
+        BoltDragging = false;
+        rackHoldUntil = 0f; // from here the spring takes over again
+
+        if (!boltDragPassed) { boltDragLock = false; handleCoupled = !BoltOpen; return; }
+
+        if (boltDragLock || BoltOpen)
+        {
+            BoltOpen = true;
+        }
+        else
+        {
+            BoltOpen = false;
+            if (!FeedFromMagazine() && action == ActionType.SelfLoading && holdOpenOnEmpty && magazine != null)
+                BoltOpen = true; // empty magazine in: the bolt catches again
+        }
+        boltDragLock = false;
+        handleCoupled = !BoltOpen; // carrier going home: the handle rides it; bolt locked open: the handle springs forward alone
+        busyUntil = Mathf.Max(busyUntil, Time.time + 0.1f);
+        onRack?.Invoke();
+        Racked?.Invoke();
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// The bolt catch. Bolt locked open: releases it, it slams forward and chambers the next round. While the charging handle is
+    /// held all the way back: locks the bolt open when the handle is let go.
+    /// </summary>
+    public bool PressBoltCatch()
+    {
+        if (BoltDragging)
+        {
+            if (BoltFraction < boltCatchEngageAt) return false;
+            boltDragLock = true;
+            StateChanged?.Invoke();
+            return true;
+        }
+        if (!BoltOpen || IsBusy) return false;
+
+        busyUntil = Time.time + rackTime * 0.5f;
+        BoltOpen = false;
+        HammerCocked = true;
+        FeedFromMagazine();   // nothing happens if there is already a round in the chamber or the magazine is empty
+        PlayClip(rackSound);
+        onRack?.Invoke();
+        StateChanged?.Invoke();
+        return true;
+    }
+
+    // ---------------------------------------------------------------- magazine release
+
+    /// <summary>The magazine release is pressed: the magazine is no longer locked in and can slide out (or falls out if nobody holds it).</summary>
+    public bool MagazineUnlocked { get; private set; }
+    /// <summary>Time.time when the release was pressed.</summary>
+    public float MagazineUnlockedAt { get; private set; }
+
+    /// <summary>The slot the magazine installs in (null on weapons without a magazine slot).</summary>
+    public AttachmentSlot MagazineSlot
+    {
+        get { TryGetMagazineSlot(out AttachmentSlot s); return s; }
+    }
+
+    public bool PressMagazineRelease()
+    {
+        if (magazine == null || MagazineUnlocked) return false;
+        MagazineUnlocked = true;
+        MagazineUnlockedAt = Time.time;
+        StateChanged?.Invoke();
+        return true;
+    }
+
     /// <summary>Pull the bolt back and hold it open (chamber contents are thrown out). For loading a round by hand or checking the chamber.</summary>
     public bool OpenBolt()
     {
@@ -895,6 +1099,7 @@ public class Firearm : MonoBehaviour, IItemStateful
         }
 
         magazine = contents;
+        MagazineUnlocked = false; // seated and locked again
         MagazineInserted?.Invoke(contents);
         StateChanged?.Invoke();
         return true;
@@ -904,15 +1109,16 @@ public class Firearm : MonoBehaviour, IItemStateful
     /// Take the magazine out, rounds and all (null if there is none). The chamber is untouched: a chambered round
     /// stays chambered and the gun can still fire it.
     /// </summary>
-    public MagazineContents EjectMagazine(out AttachmentData magazineType)
+    public MagazineContents EjectMagazine(out AttachmentData magazineType, bool animate = true)
     {
         magazineType = null;
         if (magazine == null) return null;
+        MagazineUnlocked = false;
 
         if (TryGetMagazineSlot(out AttachmentSlot slot) && slot.Installed != null)
         {
             syncingAttachments = true;
-            magazineType = attachments.Remove(slot);
+            magazineType = attachments.Remove(slot, animate);
             syncingAttachments = false;
         }
 
@@ -936,6 +1142,7 @@ public class Firearm : MonoBehaviour, IItemStateful
     {
         if (syncingAttachments || slot == null) return;
         if (slot.slotID != magazineSlotId || slot.category != AttachmentCategory.Magazine) return;
+        MagazineUnlocked = false;
 
         if (now != null)
         {
@@ -997,6 +1204,26 @@ public class Firearm : MonoBehaviour, IItemStateful
         if (boltCarrier == null) return;
 
         dt = Mathf.Min(dt, 0.033f);
+
+        // The player is dragging the charging handle: the carrier follows the hand (smoothed), no spring.
+        if (BoltDragging)
+        {
+            if (HandleActive)
+            {
+                // ONE smoothed value for the hand; the carrier is locked to it, so the two can never drift apart however fast you pull.
+                handlePos = Mathf.SmoothDamp(handlePos, boltDragTarget * HandleTravel, ref handleVel, 0.03f, Mathf.Infinity, dt);
+                boltPos = Mathf.Max(HandleFraction, boltDragFloor) * boltTravel;
+                boltVel = 0f;
+            }
+            else
+            {
+                float carrierTarget = Mathf.Max(boltDragTarget, boltDragFloor);
+                boltPos = Mathf.SmoothDamp(boltPos, carrierTarget * boltTravel, ref boltVel, 0.03f, Mathf.Infinity, dt);
+            }
+            ApplyBoltPose(dt);
+            return;
+        }
+
         bool holdBack = BoltOpen || Time.time < rackHoldUntil;
         float target = holdBack ? boltTravel : 0f;
 
@@ -1013,7 +1240,57 @@ public class Firearm : MonoBehaviour, IItemStateful
             else if (boltPos > boltTravel) { boltPos = boltTravel; boltVel = Mathf.Min(0f, -boltVel * 0.2f); }
         }
 
-        boltCarrier.localPosition = boltRestLocal + boltAxis.normalized * boltPos;
+        ApplyBoltPose(dt);
+    }
+
+    /// <summary>Puts the bolt carrier and the charging handle where the simulation says they are.</summary>
+    void ApplyBoltPose(float dt)
+    {
+        Vector3 axis = boltAxis.sqrMagnitude > 0.0001f ? boltAxis.normalized : Vector3.back;
+
+        // Handle first: the carrier may be its child, and the carrier is then placed in world space so it never double-moves.
+        if (HandleActive)
+        {
+            float travel = HandleTravel;
+            if (!BoltDragging)   // (while dragging, UpdateBolt has already placed the handle)
+            {
+                if (chargingHandleReciprocates || handleCoupled)
+                {
+                    // Fixed to the carrier (AK), or just let go and riding the carrier home: exactly the same position, no lag.
+                    handlePos = BoltFraction * travel;
+                    handleVel = 0f;
+                    if (!chargingHandleReciprocates && BoltFraction < 0.02f) handleCoupled = false;
+                }
+                else
+                {
+                    // The bolt stayed locked open: the handle returns forward on its own.
+                    handlePos = Mathf.SmoothDamp(handlePos, 0f, ref handleVel, Mathf.Max(0.01f, chargingHandleReturnTime), Mathf.Infinity, dt);
+                }
+            }
+
+            chargingHandle.position = transform.TransformPoint(handleRestRoot) + WorldOffset(handlePos);
+        }
+
+        boltCarrier.position = transform.TransformPoint(boltRestRoot) + WorldOffset(boltPos);
+    }
+
+    /// <summary>
+    /// The space Bolt Axis is written in: the charging handle's PARENT when there is a separate handle, otherwise the bolt carrier's
+    /// parent. The handle and the carrier both use this one frame, so they always slide the same way.
+    /// </summary>
+    Transform AxisFrame => HandleActive ? chargingHandle.parent : (boltCarrier != null ? boltCarrier.parent : null);
+
+    /// <summary>
+    /// A slide of `amount` along Bolt Axis as a world-space displacement. The DISTANCE is measured in the weapon's own units, so
+    /// import scales on the parts (a handle at scale 100 that holds the carrier, say) can't make one part travel further than another.
+    /// </summary>
+    Vector3 WorldOffset(float amount)
+    {
+        Transform parent = AxisFrame;
+        Vector3 a = boltAxis.sqrMagnitude > 0.0001f ? boltAxis.normalized : Vector3.back;
+        Vector3 dirWorld = parent != null ? parent.TransformDirection(a) : transform.TransformDirection(a);
+        Vector3 dirRoot = transform.InverseTransformDirection(dirWorld.normalized);
+        return transform.TransformVector(dirRoot * amount);
     }
 
     /// <summary>True while the bolt catch is holding the bolt open (the lever is up).</summary>
@@ -1021,7 +1298,7 @@ public class Firearm : MonoBehaviour, IItemStateful
     {
         get
         {
-            if (!BoltOpen) return false;
+            if (!BoltOpen && !boltDragLock) return false;
             if (boltCarrier == null || boltTravel <= 0.0001f) return true;
             return boltPos >= boltTravel * boltCatchEngageAt; // it can only catch a bolt that has come all the way back
         }

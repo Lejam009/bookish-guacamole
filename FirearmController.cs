@@ -5,8 +5,8 @@ using UnityEngine;
 ///
 ///   Left mouse (hold)   pull the trigger
 ///   B                   selector switch: Safe > Semi > Burst > Auto (only the modes the gun has)
-///   T                   work the charging handle: clears a misfire, chambers the first round after a magazine change,
-///                       releases a locked-back bolt, works a bolt-action
+///   (Racking the gun, the magazine release, the bolt catch and magazines are handled in reload interaction mode:
+///    see FirearmInteraction. There is no rack key any more.)
 ///
 /// THE GUN CANNOT FIRE WHILE:
 ///   - weapon inspect mode is active (or still swinging the gun back to your hands)
@@ -145,11 +145,7 @@ public class FirearmController : MonoBehaviour
             if (allowed) firearm.SetTrigger(held && !blockedPress);
             else firearm.ReleaseTrigger();
 
-            if (CanHandle())
-            {
-                if (GameInput.FireModePressed()) firearm.CycleFireMode();
-                if (GameInput.RackPressed()) firearm.Rack();
-            }
+            if (CanHandle() && GameInput.FireModePressed()) firearm.CycleFireMode();
         }
 
         lockedLastFrame = Cursor.lockState == CursorLockMode.Locked;
