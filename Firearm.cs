@@ -17,6 +17,22 @@ public enum MagazineFeedStatus { Ready, NoMagazine, MagazineEmpty, WrongCaliber 
 public enum TriggerResult { Fired, Misfire, DryFire, HammerDown, BoltOpen, Safe, Busy }
 
 /// <summary>
+/// One way a magazine insertion can go wrong: a line the magazine slides along after it misses the magwell.
+/// The Axis empty's position is the deepest point the magazine reaches; its blue/Z arrow points away from the gun.
+/// </summary>
+[Serializable]
+public class MagazineMissAxis
+{
+    [Tooltip("Empty child of the weapon. Position = the deepest point the magazine reaches. Blue/Z arrow = the way the magazine travels out, away from the gun.")]
+    public Transform axis;
+    [Tooltip("How far (metres) the line runs. The miss is over when you pull the magazine out past this, and then you can try again.")]
+    [Min(0.01f)] public float length = 0.08f;
+    [Tooltip("Tick this for a miss that slams the magazine into the dust cover (e.g. an axis on the right side of an AR-15): when this miss happens the cover is knocked shut. " +
+             "Needs the Dust Cover set up on the Firearm.")]
+    public bool closesDustCover;
+}
+
+/// <summary>
 /// A small spring-animated part of the gun (bolt catch, latch, button, selector...): drag the transform in, pick Rotate or Move,
 /// and give the amount. It swings or slides from where it sits in the prefab (the rest pose) with a little spring.
 /// Every such part on the Firearm uses these same settings.
@@ -191,6 +207,15 @@ public class Firearm : MonoBehaviour, IItemStateful
     [Tooltip("How far back (0 to 1 of the bolt travel) the handle has to be pulled before the gun ejects what's in the chamber.")]
     [Range(0.5f, 1f)] public float boltDragEjectAt = 0.85f;
 
+    [Header("Magazine Miss Axes (optional)")]
+    [Tooltip("What a missed magazine insertion looks like. Make EMPTY children of the weapon around the magwell, one per way the magazine can go wrong " +
+             "(slipping off the front lip, the rear lip, jamming crooked...). Drag them in here. When the magazine misses the well (pushed in too fast or not lined up), " +
+             "a RANDOM one is picked and the magazine travels along it until you pull it out past its Length, then you can try again. " +
+             "Each empty: its POSITION is the deepest point the magazine reaches, and its blue/Z arrow points AWAY from the gun, along the line the magazine travels. " +
+             "Select the weapon to see them as magenta lines. With none, a too-fast insertion has no special effect. " +
+             "Tick Closes Dust Cover on a miss that should slam into the dust cover.")]
+    public MagazineMissAxis[] magazineMissAxes;
+
     [Header("Bolt Catch / Bolt Release (visual)")]
     [Tooltip("The bolt catch lever (the AR-15's lever on the left of the receiver, the 1911's slide stop). It moves by Amount when the bolt locks back, " +
              "and returns when the bolt is released or closed. Pose the model with the bolt CLOSED.")]
@@ -212,6 +237,20 @@ public class Firearm : MonoBehaviour, IItemStateful
     public float magazineDropKickDegrees = 1.5f;
     [Tooltip("How long that dip lasts in total (seconds, down and back up). The dip only moves the gun, not the camera.")]
     public float magazineDropKickSeconds = 0.3f;
+
+    [Header("Dust Cover / Ejection Port Cover (visual)")]
+    [Tooltip("The spring-loaded cover over the ejection port (the AR-15's dust cover). Pose the model with it CLOSED. It swings to its open pose by Amount. " +
+             "Pick Rotate or Move. Click it in reload interaction mode (Dust Cover Hotspot) to open or close it.")]
+    public PartMotion dustCover = new PartMotion { kind = PartMotion.Kind.Rotate, axis = Vector3.right, amount = 100f, stiffness = 600f, dampingRatio = 0.55f };
+    [Tooltip("Clickable spot over the dust cover for reload interaction mode: click to open or close it. An empty child of the weapon with a Box Collider and an InspectHotspot, " +
+             "like the other hotspots above. (It can also be the cover itself if it has a collider.)")]
+    public InspectHotspot dustCoverHotspot;
+    [Tooltip("The weapon starts with the cover open.")]
+    public bool dustCoverStartsOpen = false;
+    [Tooltip("Firing with the cover closed throws it open (the case and the bolt carrier blow it open). It then stays open until you close it.")]
+    public bool dustCoverOpensWhenFired = true;
+    [Tooltip("Pulling the bolt back (charging handle or the action cycling) also pushes the cover open once the bolt has travelled this fraction of the way back. 0 = off. Needs a Bolt Carrier.")]
+    [Range(0f, 1f)] public float dustCoverOpensAtBolt = 0.15f;
 
     [Header("Fire Selector Switch (visual)")]
     [Tooltip("The selector lever / switch on the model. It moves to the position of the current fire mode, so what the player sees is always what the gun will do. " +
@@ -433,6 +472,7 @@ public class Firearm : MonoBehaviour, IItemStateful
         public string chamberAmmoId;
         public bool boltOpen;
         public bool hammerCocked;
+        public bool dustCoverOpen;
         public int mode;
         public bool hasMagazine;
         public MagazineContents magazine;
@@ -482,6 +522,8 @@ public class Firearm : MonoBehaviour, IItemStateful
         selectorLever.Capture();
         chargingHandleLatch.Capture();
         magazineReleaseButton.Capture();
+        dustCover.Capture();
+        DustCoverOpen = dustCoverStartsOpen;
         Mode = ValidMode(startMode);
         HammerCocked = false;
 
@@ -533,8 +575,33 @@ public class Firearm : MonoBehaviour, IItemStateful
         UpdateBoltCatch(dt);
         chargingHandleLatch.Tick(transform, BoltDragging, dt);
         magazineReleaseButton.Tick(transform, Time.time < magReleasePressedUntil, dt);
+        UpdateDustCover(dt);
         UpdateSelector(dt);
         FireLoop(dt);
+    }
+
+    // ================================================================== dust cover
+
+    /// <summary>True while the ejection port cover is open.</summary>
+    public bool DustCoverOpen { get; private set; }
+
+    float prevBoltFraction;
+
+    public void OpenDustCover() => DustCoverOpen = true;
+    public void CloseDustCover() => DustCoverOpen = false;
+    public void ToggleDustCover() => DustCoverOpen = !DustCoverOpen;
+
+    void UpdateDustCover(float dt)
+    {
+        // The bolt coming back pushes the cover open. Only the moment it passes the mark counts, so a cover you close
+        // while the bolt is locked back stays closed.
+        if (dustCoverOpensAtBolt > 0.0001f && boltCarrier != null)
+        {
+            float f = BoltFraction;
+            if (prevBoltFraction < dustCoverOpensAtBolt && f >= dustCoverOpensAtBolt) DustCoverOpen = true;
+            prevBoltFraction = f;
+        }
+        dustCover.Tick(transform, DustCoverOpen, dt);
     }
 
     void OnValidate()
@@ -697,6 +764,7 @@ public class Firearm : MonoBehaviour, IItemStateful
 
         if (boltCarrier != null) boltVel += boltCycleSpeed;
         if (action == ActionType.SelfLoading) CycleAction();
+        if (dustCoverOpensWhenFired) DustCoverOpen = true;
 
         PlayClip(fireSound);
         onFired?.Invoke();
@@ -775,6 +843,19 @@ public class Firearm : MonoBehaviour, IItemStateful
 
     void OnDrawGizmosSelected()
     {
+        // Magazine miss axes: magenta line from the deepest point out along the travel direction.
+        if (magazineMissAxes != null)
+        {
+            Gizmos.color = Color.magenta;
+            foreach (MagazineMissAxis m in magazineMissAxes)
+            {
+                if (m == null || m.axis == null) continue;
+                Vector3 a = m.axis.position;
+                Gizmos.DrawWireSphere(a, 0.004f);
+                Gizmos.DrawLine(a, a + m.axis.forward * Mathf.Max(0.01f, m.length));
+            }
+        }
+
         if (recoilPivot == null) return;
         Vector3 p = recoilPivot.position;
         float len = 0.12f;
@@ -1499,6 +1580,7 @@ public class Firearm : MonoBehaviour, IItemStateful
             chamberAmmoId = ChamberedAmmo != null ? ChamberedAmmo.ammoId : "",
             boltOpen = BoltOpen,
             hammerCocked = HammerCocked,
+            dustCoverOpen = DustCoverOpen,
             mode = (int)Mode,
             hasMagazine = magazine != null,
             magazine = magazine ?? new MagazineContents()
@@ -1521,6 +1603,7 @@ public class Firearm : MonoBehaviour, IItemStateful
         Chamber = ChamberedAmmo != null ? (ChamberState)Mathf.Clamp(state.chamber, 0, 2) : ChamberState.Empty;
         BoltOpen = state.boltOpen;
         HammerCocked = state.hammerCocked;
+        DustCoverOpen = state.dustCoverOpen;
         Mode = ValidMode((FireMode)Mathf.Clamp(state.mode, 0, 3));
         magazine = state.hasMagazine ? state.magazine : null;
         // The magazine model on the gun carries the restored rounds too.
@@ -1534,6 +1617,8 @@ public class Firearm : MonoBehaviour, IItemStateful
         boltVel = 0f;
         selectorLever.Snap();   // a loaded save shows these parts in the right place immediately
         boltCatchLever.Snap();
+        dustCover.Snap();
+        prevBoltFraction = BoltFraction;
         StateChanged?.Invoke();
     }
 }
