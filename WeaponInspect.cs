@@ -186,6 +186,7 @@ public class WeaponInspect : MonoBehaviour
     InspectHotspot hovered, pressed;
     readonly List<Collider> hotspotColliders = new List<Collider>();
     readonly RaycastHit[] hits = new RaycastHit[16];
+    readonly RaycastHit[] wallHits = new RaycastHit[16];
 
     void Awake()
     {
@@ -604,9 +605,18 @@ public class WeaponInspect : MonoBehaviour
             {
                 float reach = Mathf.Max(0.1f, targetPos.z + item.data.lengthMeters * 0.5f);
                 Vector3 fwd = frameRot * Vector3.forward;
-                if (Physics.SphereCast(frameOrigin, 0.08f, fwd, out RaycastHit hit, reach,
-                        ~(1 << gameObject.layer), QueryTriggerInteraction.Ignore))
-                    pushTarget = Mathf.Clamp(reach - hit.distance, 0f, maxWallRetract);
+                // The nearest solid thing ahead pulls the gun back. A magazine that just dropped out of the gun is not a wall.
+                int wallCount = Physics.SphereCastNonAlloc(frameOrigin, 0.08f, fwd, wallHits, reach,
+                                                           ~(1 << gameObject.layer), QueryTriggerInteraction.Ignore);
+                float nearestWall = float.MaxValue;
+                for (int wi = 0; wi < wallCount; wi++)
+                {
+                    if (wallHits[wi].distance >= nearestWall) continue;
+                    if (wallHits[wi].collider.GetComponentInParent<MagazineItem>() != null) continue;
+                    nearestWall = wallHits[wi].distance;
+                }
+                if (nearestWall < float.MaxValue)
+                    pushTarget = Mathf.Clamp(reach - nearestWall, 0f, maxWallRetract);
             }
             wallPush += (pushTarget - wallPush) * (1f - Mathf.Exp(-12f * dt));
             targetPos.z -= wallPush;

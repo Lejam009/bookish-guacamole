@@ -16,7 +16,8 @@ using UnityEngine;
 ///   Magazine            once it is unlocked, press and DRAG it out of the magazine well. Let go over the well
 ///                       to push it back in, anywhere else to put it in your stash.
 ///
-///   T   magazine release while the mouse is busy holding the magazine (the cursor is on the magazine, so you can't click the button)
+///   T   magazine release. Works in every mode, not only here (an unlocked magazine nobody holds falls out); in this mode it is
+///       also how you keep hold of the magazine: the cursor is on the magazine, so you can't click the button
 ///   Y   bolt catch while the mouse is holding the charging handle all the way back (locks the bolt open)
 ///
 /// A temporary "magazine stash" list at the bottom left lets you take a magazine in hand, until pouches replace it:
@@ -29,6 +30,8 @@ public class FirearmInteraction : MonoBehaviour
 {
     [Header("References (found automatically if empty)")]
     public WeaponInspect inspect;
+    public HeldItemSlot slot;
+    public WeaponRecoil recoil;
     public AttachmentInventory inventory;
 
     [Header("Magazine")]
@@ -81,6 +84,8 @@ public class FirearmInteraction : MonoBehaviour
     void Awake()
     {
         if (inspect == null) inspect = GetComponent<WeaponInspect>();
+        if (slot == null) slot = GetComponent<HeldItemSlot>();
+        if (recoil == null) recoil = GetComponent<WeaponRecoil>();
         if (inventory == null) inventory = GetComponentInChildren<AttachmentInventory>();
         playerColliders = GetComponentsInChildren<Collider>();
     }
@@ -92,6 +97,8 @@ public class FirearmInteraction : MonoBehaviour
     void Update()
     {
         if (inspect == null) return;
+
+        WorkMagazineReleaseOutsideInspect();
 
         Firearm current = inspect.IsInspecting && !inspect.IsExiting && inspect.Item != null
             ? inspect.Item.GetComponent<Firearm>() : null;
@@ -136,8 +143,6 @@ public class FirearmInteraction : MonoBehaviour
                 if (pressed) TryBeginClick(ray);
                 break;
         }
-
-        AutoDrop();
     }
 
     void TryBeginClick(Ray ray)
@@ -344,19 +349,46 @@ public class FirearmInteraction : MonoBehaviour
     // ================================================================== magazine release: falls out
 
     /// <summary>An unlocked magazine nobody is holding falls out of the gun and lands on the ground.</summary>
-    void AutoDrop()
+    void AutoDrop(Firearm g, AttachmentSlot ms)
     {
-        if (magSlot == null || !gun.MagazineUnlocked || !gun.HasMagazine) return;
-        if (drag == DragKind.SeatedMagazine) return; // being held
-        if (Time.time - gun.MagazineUnlockedAt < magazineDropDelay) return;
+        if (ms == null || !g.MagazineUnlocked || !g.HasMagazine) return;
+        if (g == gun && drag == DragKind.SeatedMagazine) return; // being held
+        if (Time.time - g.MagazineUnlockedAt < magazineDropDelay) return;
 
-        GameObject inst = magSlot.Instance;
-        Vector3 pos = inst != null ? inst.transform.position : gun.transform.position;
-        Quaternion rot = inst != null ? inst.transform.rotation : gun.transform.rotation;
+        GameObject inst = ms.Instance;
+        Vector3 pos = inst != null ? inst.transform.position : g.transform.position;
+        Quaternion rot = inst != null ? inst.transform.rotation : g.transform.rotation;
         Vector3 scale = inst != null ? inst.transform.lossyScale : Vector3.one;
 
-        MagazineContents contents = gun.EjectMagazine(out AttachmentData type, false);
+        MagazineContents contents = g.EjectMagazine(out AttachmentData type, false);
         MagazineItem.Drop(type, contents, pos, rot, scale, Vector3.down * 0.3f, inventory, playerColliders);
+
+        // The gun lightens and drops a little in the hands.
+        if (recoil != null) recoil.ApplyKick(g.magazineDropKickDegrees, g.magazineDropKickSeconds);
+    }
+
+    /// <summary>
+    /// T works the magazine release whenever the gun is in the hands, not only in reload mode. This also makes an unlocked magazine
+    /// fall out in every mode (reload mode, normal play, safe zone), so it runs every frame.
+    /// </summary>
+    void WorkMagazineReleaseOutsideInspect()
+    {
+        Firearm held = slot != null && slot.Current != null ? slot.Current.GetComponent<Firearm>() : null;
+        if (held == null) return;
+
+        if (!inspect.IsInspecting && GameInput.MagReleasePressed() && CanUseHands())
+            held.PressMagazineRelease();
+
+        AutoDrop(held, held.MagazineSlot);
+    }
+
+    /// <summary>The gun is in the hands and nothing else owns them (no inspect mode, no menu).</summary>
+    bool CanUseHands()
+    {
+        if (slot == null || !slot.HasItem || slot.HeldData == null || slot.HeldData.category != ItemCategory.Weapon) return false;
+        if (slot.IsEquipping || slot.ExternalControl || slot.IsThrowCharging) return false;
+        if (inspect.look != null && !inspect.look.LookEnabled) return false;
+        return Cursor.lockState == CursorLockMode.Locked;
     }
 
     // ================================================================== cancel

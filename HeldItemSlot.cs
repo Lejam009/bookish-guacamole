@@ -117,6 +117,7 @@ public class HeldItemSlot : MonoBehaviour
     Rigidbody playerRb;
     Collider[] playerColliders;
     int worldMask;
+    readonly RaycastHit[] wallHits = new RaycastHit[16];
 
     float heldMass, addedLoad;
     float equipT, equipDuration;
@@ -136,6 +137,7 @@ public class HeldItemSlot : MonoBehaviour
     // Recoil pushed in by WeaponRecoil: the gun rotates and slides about a point near the shoulder
     Vector3 recoilPivotInItem, recoilPos;
     Quaternion recoilRot = Quaternion.identity;
+    Quaternion recoilPivotRot = Quaternion.identity;
 
     void Awake()
     {
@@ -222,12 +224,15 @@ public class HeldItemSlot : MonoBehaviour
 
     /// <summary>
     /// Called every frame by WeaponRecoil. The whole gun is rotated by localRot about pivotInItem (a point on the
-    /// item, in the item's own space: the stock / shoulder contact) and then moved by localOffset (camera space).
+    /// item, in the item's own space: the stock / shoulder contact) and then moved by localOffset.
+    /// localOffset and localRot are expressed in the RECOIL PIVOT's axes (pivotRotInItem = that pivot's orientation
+    /// relative to the item), so "back" is always against the bore and "climb" is always about the gun's own right axis.
     /// Zero offset and identity rotation = no recoil.
     /// </summary>
-    public void SetRecoilPose(Vector3 pivotInItem, Vector3 localOffset, Quaternion localRot)
+    public void SetRecoilPose(Vector3 pivotInItem, Quaternion pivotRotInItem, Vector3 localOffset, Quaternion localRot)
     {
         recoilPivotInItem = pivotInItem;
+        recoilPivotRot = pivotRotInItem;
         recoilPos = localOffset;
         recoilRot = localRot;
     }
@@ -464,9 +469,18 @@ public class HeldItemSlot : MonoBehaviour
         if (retractFromWalls && d.lengthMeters > 0.01f)
         {
             float reach = d.holdPosition.z + d.lengthMeters;
-            if (Physics.SphereCast(cam.position, 0.08f, cam.forward, out RaycastHit hit, reach,
-                    worldMask, QueryTriggerInteraction.Ignore))
-                pushTarget = Mathf.Clamp(reach - hit.distance, 0f, maxRetract);
+            // The nearest solid thing ahead pulls the gun back. A magazine that just dropped out of the gun is not a wall.
+            int hitCount = Physics.SphereCastNonAlloc(cam.position, 0.08f, cam.forward, wallHits, reach,
+                                                      worldMask, QueryTriggerInteraction.Ignore);
+            float nearest = float.MaxValue;
+            for (int i = 0; i < hitCount; i++)
+            {
+                if (wallHits[i].distance >= nearest) continue;
+                if (wallHits[i].collider.GetComponentInParent<MagazineItem>() != null) continue;
+                nearest = wallHits[i].distance;
+            }
+            if (nearest < float.MaxValue)
+                pushTarget = Mathf.Clamp(reach - nearest, 0f, maxRetract);
         }
         wallPush += (pushTarget - wallPush) * (1f - Mathf.Exp(-12f * dt));
 
@@ -502,9 +516,13 @@ public class HeldItemSlot : MonoBehaviour
 
         // Recoil: the gun twists about the shoulder point. The pivot is measured on the pose WITHOUT recoil,
         // so rotating about it can never feed back into itself.
+        // The recoil is described in the recoil pivot's axes. basis = those axes in camera space for the gun's CURRENT pose
+        // (hip, low ready, aimed...), so the push goes against the bore and the climb turns about the gun's own right axis.
         Vector3 recoilPivot = lp + localRot * recoilPivotInItem;
-        lp = recoilPivot + recoilRot * (lp - recoilPivot) + recoilPos;
-        localRot = recoilRot * localRot;
+        Quaternion basis = localRot * recoilPivotRot;
+        Quaternion camRecoilRot = basis * recoilRot * Quaternion.Inverse(basis);
+        lp = recoilPivot + camRecoilRot * (lp - recoilPivot) + basis * recoilPos;
+        localRot = camRecoilRot * localRot;
 
         // Where the hands WOULD hold the item this frame (camera space). Inspect mode eases back to this when it ends.
         PoseLocalPos = lp;

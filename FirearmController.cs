@@ -4,7 +4,7 @@ using UnityEngine;
 /// The player's hands on the weapon: reads the keys and decides whether the gun may fire.
 ///
 ///   Left mouse (hold)   pull the trigger
-///   B                   selector switch: Safe > Semi > Burst > Auto (only the modes the gun has)
+///   B                   selector switch: Safe > Semi > Burst > Auto (only the modes the gun has). Works in inspect mode too.
 ///   (Racking the gun, the magazine release, the bolt catch and magazines are handled in reload interaction mode:
 ///    see FirearmInteraction. There is no rack key any more.)
 ///
@@ -115,6 +115,19 @@ public class FirearmController : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// The fire selector can be worked whenever the gun is in the hands: also during inspect mode (where the cursor is free
+    /// and the inspect system owns the gun), and also in a safe zone.
+    /// </summary>
+    bool CanSelect()
+    {
+        if (firearm == null || slot == null || !slot.HasItem || slot.HeldData == null) return false;
+        if (slot.HeldData.category != ItemCategory.Weapon) return false;
+        if (slot.IsEquipping || slot.IsThrowCharging) return false;
+        if (inspect != null && inspect.IsInspecting) return !inspect.IsExiting;
+        return CanHandle();
+    }
+
     bool CanFire()
     {
         if (!CanHandle()) return false;
@@ -145,7 +158,7 @@ public class FirearmController : MonoBehaviour
             if (allowed) firearm.SetTrigger(held && !blockedPress);
             else firearm.ReleaseTrigger();
 
-            if (CanHandle() && GameInput.FireModePressed()) firearm.CycleFireMode();
+            if (CanSelect() && GameInput.FireModePressed()) firearm.CycleFireMode();
         }
 
         lockedLastFrame = Cursor.lockState == CursorLockMode.Locked;

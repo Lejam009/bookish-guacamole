@@ -16,6 +16,101 @@ public enum MagazineFeedStatus { Ready, NoMagazine, MagazineEmpty, WrongCaliber 
 
 public enum TriggerResult { Fired, Misfire, DryFire, HammerDown, BoltOpen, Safe, Busy }
 
+/// <summary>
+/// A small spring-animated part of the gun (bolt catch, latch, button, selector...): drag the transform in, pick Rotate or Move,
+/// and give the amount. It swings or slides from where it sits in the prefab (the rest pose) with a little spring.
+/// Every such part on the Firearm uses these same settings.
+/// </summary>
+[Serializable]
+public class PartMotion
+{
+    public enum Kind { Rotate, Move }
+
+    [Tooltip("The part that animates. Leave empty for no animation.")]
+    public Transform part;
+    [Tooltip("Rotate: the part turns. Move: the part slides.")]
+    public Kind kind = Kind.Rotate;
+    [Tooltip("Rotate: the axis it turns around. Move: the direction it slides (in the space of the part's PARENT). " +
+             "Rotate the part in the Scene view to find which axis (X, Y or Z) does what you want. Use a negative amount to go the other way.")]
+    public Vector3 axis = Vector3.right;
+    [Tooltip("Rotate: degrees. Move: metres. How far the part goes from its rest pose (the pose it has in the prefab) when it is 'active'. " +
+             "(The fire selector ignores this and has an amount per fire mode instead.)")]
+    public float amount = 15f;
+    [Tooltip("Snappiness of the motion. Higher = faster.")]
+    public float stiffness = 1000f;
+    [Tooltip("Below ~0.7 it overshoots a little and settles. 1 = no overshoot.")]
+    [Range(0.2f, 1.5f)] public float dampingRatio = 0.8f;
+
+    Vector3 restPos;
+    Quaternion restRot = Quaternion.identity;
+    float value, vel;   // in degrees (Rotate) or metres (Move)
+    bool captured, snap = true;
+
+    /// <summary>Fills in all the settings in one go.</summary>
+    public PartMotion Set(Transform t, Kind k, Vector3 ax, float amt, float stiff, float damp)
+    {
+        part = t; kind = k; axis = ax; amount = amt; stiffness = stiff; dampingRatio = damp;
+        return this;
+    }
+
+    /// <summary>Remembers the rest pose. Called once when the weapon wakes up.</summary>
+    public void Capture()
+    {
+        if (part == null) return;
+        restPos = part.localPosition;
+        restRot = part.localRotation;
+        captured = true;
+    }
+
+    /// <summary>The next Tick jumps straight to its target instead of gliding (used when a save is loaded).</summary>
+    public void Snap() => snap = true;
+
+    /// <summary>Moves the part toward "active" (the full Amount) or back to rest. `root` is the weapon: Move distances are measured in its units.</summary>
+    public void Tick(Transform root, bool active, float dt) => TickTo(root, active ? amount : 0f, dt);
+
+    /// <summary>Moves the part toward an exact position, in degrees (Rotate) or metres (Move) from rest.</summary>
+    public void TickTo(Transform root, float target, float dt)
+    {
+        if (part == null) return;
+        if (!captured) Capture();
+
+        if (snap)
+        {
+            value = target; vel = 0f; snap = false;
+        }
+        else
+        {
+            dt = Mathf.Min(dt, 0.033f);
+            float c = 2f * dampingRatio * Mathf.Sqrt(stiffness);
+            int steps = Mathf.Max(1, Mathf.CeilToInt(dt / 0.002f));
+            float h = dt / steps;
+            for (int i = 0; i < steps; i++)
+            {
+                vel += (-stiffness * (value - target) - c * vel) * h;
+                value += vel * h;
+            }
+        }
+
+        Vector3 a = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.right;
+        if (kind == Kind.Rotate)
+        {
+            part.localRotation = restRot * Quaternion.AngleAxis(value, a);
+            return;
+        }
+
+        // Move: the DISTANCE is in the weapon's units, so an odd import scale on a parent can't stretch it.
+        Transform parent = part.parent;
+        if (parent == null || root == null)
+        {
+            part.localPosition = restPos + a * value;
+            return;
+        }
+        Vector3 dirWorld = parent.TransformDirection(a).normalized;
+        Vector3 worldDisp = root.TransformVector(root.InverseTransformDirection(dirWorld) * value);
+        part.localPosition = restPos + parent.InverseTransformVector(worldDisp);
+    }
+}
+
 /// <summary>Everything that left the gun in one shot (passed to Firearm.Fired).</summary>
 public struct ShotInfo
 {
@@ -97,36 +192,48 @@ public class Firearm : MonoBehaviour, IItemStateful
     [Range(0.5f, 1f)] public float boltDragEjectAt = 0.85f;
 
     [Header("Bolt Catch / Bolt Release (visual)")]
-    [Tooltip("Optional. The bolt catch lever (the AR-15's lever on the left of the receiver, the 1911's slide stop). " +
-             "It swings up to its Open Angle when the bolt locks back, and drops down when the bolt is released or closed.")]
-    public Transform boltCatch;
-    [Tooltip("The axis the lever turns around, in its own local space. Rotate the lever with the Rotate tool in the scene to see which axis (X, Y or Z) swings it. " +
-             "Use a negative Open Angle to turn it the other way.")]
-    public Vector3 boltCatchAxis = Vector3.right;
-    [Tooltip("Degrees from the lever's pose in the prefab (set the model up with the bolt CLOSED) to where it sits while holding the bolt open.")]
-    public float boltCatchOpenAngle = 15f;
-    [Tooltip("How snappy the lever moves. Higher = faster.")]
-    public float boltCatchStiffness = 900f;
-    [Tooltip("Below ~0.7 the lever overshoots a little and settles, like a real spring-loaded catch. 1 = no overshoot.")]
-    [Range(0.2f, 1.5f)] public float boltCatchDampingRatio = 0.55f;
+    [Tooltip("The bolt catch lever (the AR-15's lever on the left of the receiver, the 1911's slide stop). It moves by Amount when the bolt locks back, " +
+             "and returns when the bolt is released or closed. Pose the model with the bolt CLOSED.")]
+    public PartMotion boltCatchLever = new PartMotion { kind = PartMotion.Kind.Rotate, axis = Vector3.right, amount = 15f, stiffness = 900f, dampingRatio = 0.55f };
     [Tooltip("When the bolt has a Bolt Carrier assigned, the catch only engages once the carrier has travelled this fraction of the way back (the catch can't catch a bolt that isn't there yet).")]
     [Range(0f, 1f)] public float boltCatchEngageAt = 0.9f;
 
+    [Header("Charging Handle Latch (visual)")]
+    [Tooltip("The latch on the charging handle (the AR-15's two-finger latch). It is pressed in while you hold the handle and springs back when you let go. " +
+             "Usually a child of the charging handle. Pick Rotate or Move.")]
+    public PartMotion chargingHandleLatch = new PartMotion { kind = PartMotion.Kind.Rotate, axis = Vector3.right, amount = 20f, stiffness = 900f, dampingRatio = 0.7f };
+
+    [Header("Magazine Release Button (visual)")]
+    [Tooltip("The magazine release button. It is pushed in when the release is pressed (clicked, or T) and springs back. Usually Move.")]
+    public PartMotion magazineReleaseButton = new PartMotion { kind = PartMotion.Kind.Move, axis = Vector3.right, amount = 0.004f };
+    [Tooltip("Seconds the button stays pushed in per press.")]
+    public float magazineReleasePressTime = 0.15f;
+    [Tooltip("When the magazine drops out of the gun, the muzzle dips a little (degrees, about this much). 0 = none. A full magazine is heavy, so a small dip is natural.")]
+    public float magazineDropKickDegrees = 1.5f;
+    [Tooltip("How long that dip lasts in total (seconds, down and back up). The dip only moves the gun, not the camera.")]
+    public float magazineDropKickSeconds = 0.3f;
+
     [Header("Fire Selector Switch (visual)")]
-    [Tooltip("Optional. The selector lever / switch on the model. It rotates to match the current fire mode, so what the player " +
-             "sees is always what the gun will do. Leave empty for no visual.")]
-    public Transform selectorSwitch;
-    [Tooltip("The axis the switch turns around, in the switch's own local space. Rotate the lever with the Rotate tool in the " +
-             "scene to see which axis (X, Y or Z) swings it the right way: usually X or Z. Use a negative angle to turn the other way.")]
-    public Vector3 selectorAxis = Vector3.right;
-    [Tooltip("Degrees from the switch's pose in the prefab, when the selector is on SAFE. Leave 0 and pose the model on safe.")]
+    [Tooltip("The selector lever / switch on the model. It moves to the position of the current fire mode, so what the player sees is always what the gun will do. " +
+             "Pick Rotate or Move. The positions are set per fire mode below (the Amount in here is not used).")]
+    public PartMotion selectorLever = new PartMotion { kind = PartMotion.Kind.Rotate, axis = Vector3.right, stiffness = 700f, dampingRatio = 1f };
+    [Tooltip("Position when the selector is on SAFE: degrees (Rotate) or metres (Move) from the pose in the prefab. Leave 0 and pose the model on safe.")]
     public float selectorAngleSafe = 0f;
-    [Tooltip("Degrees when on SEMI. AR-15: 90. AK: 40.")]
+    [Tooltip("Position on SEMI. AR-15: 90 degrees. AK: 40 degrees.")]
     public float selectorAngleSemi = 90f;
-    [Tooltip("Degrees when on BURST (only if the gun has burst).")]
+    [Tooltip("Position on BURST (only if the gun has burst).")]
     public float selectorAngleBurst = 135f;
-    [Tooltip("Degrees when on AUTO. AR-15: 180. AK: 20 (the AK's switch only travels about 40 degrees: safe, then auto, then semi).")]
+    [Tooltip("Position on AUTO. AR-15: 180 degrees. AK: 20 degrees (the AK's switch only travels about 40 degrees: safe, then auto, then semi).")]
     public float selectorAngleAuto = 180f;
+
+    // Old single-transform fields. Kept hidden only so existing weapons carry their settings over to the new parts above.
+    [HideInInspector] public Transform boltCatch;
+    [HideInInspector] public Vector3 boltCatchAxis = Vector3.right;
+    [HideInInspector] public float boltCatchOpenAngle = 15f;
+    [HideInInspector] public float boltCatchStiffness = 900f;
+    [HideInInspector] public float boltCatchDampingRatio = 0.55f;
+    [HideInInspector] public Transform selectorSwitch;
+    [HideInInspector] public Vector3 selectorAxis = Vector3.right;
 
     [Header("Action")]
     public ActionType action = ActionType.SelfLoading;
@@ -217,7 +324,7 @@ public class Firearm : MonoBehaviour, IItemStateful
     public bool startWithVirtualMagazine = true;
 
     [Header("Sounds (optional)")]
-    public AudioClip[] fireSounds;
+    public AudioClip fireSound;
     public AudioClip dryFireSound;
     public AudioClip rackSound;
     [Range(0f, 1f)] public float soundVolume = 1f;
@@ -291,6 +398,8 @@ public class Firearm : MonoBehaviour, IItemStateful
     }
     /// <summary>The recoil pivot in this weapon's local space (zero if none is set).</summary>
     public Vector3 RecoilPivotLocal => recoilPivot != null ? transform.InverseTransformPoint(recoilPivot.position) : Vector3.zero;
+    /// <summary>Orientation of the Recoil Pivot relative to the weapon root (its blue axis is the way the bullet leaves).</summary>
+    public Quaternion RecoilPivotLocalRotation => recoilPivot != null ? Quaternion.Inverse(transform.rotation) * recoilPivot.rotation : Quaternion.identity;
 
     /// <summary>What bullets can hit. FirearmController sets this to everything except the player.</summary>
     public int HitMask { get; set; } = Physics.DefaultRaycastLayers;
@@ -346,12 +455,6 @@ public class Firearm : MonoBehaviour, IItemStateful
     Vector3 boltRestRoot, handleRestRoot, handleRestLocal;
     float handlePos, handleVel, boltDragFloor;
     bool handleCoupled; // after a release the handle rides the carrier home instead of springing on its own
-    Quaternion boltCatchRestLocal = Quaternion.identity;
-    float boltCatchAngle, boltCatchVel;
-    bool boltCatchSnap = true;
-    Quaternion selectorRestLocal = Quaternion.identity;
-    float selectorAngle, selectorVel;
-    bool selectorSnap = true;
     float boltPos, boltVel, rackHoldUntil;
 
     // ================================================================== lifecycle
@@ -374,8 +477,11 @@ public class Firearm : MonoBehaviour, IItemStateful
             handleRestLocal = chargingHandle.localPosition;
             handleRestRoot = transform.InverseTransformPoint(chargingHandle.position);
         }
-        if (selectorSwitch != null) selectorRestLocal = selectorSwitch.localRotation;
-        if (boltCatch != null) boltCatchRestLocal = boltCatch.localRotation;
+        MigrateLegacyParts();
+        boltCatchLever.Capture();
+        selectorLever.Capture();
+        chargingHandleLatch.Capture();
+        magazineReleaseButton.Capture();
         Mode = ValidMode(startMode);
         HammerCocked = false;
 
@@ -425,12 +531,15 @@ public class Firearm : MonoBehaviour, IItemStateful
         float dt = Time.deltaTime;
         UpdateBolt(dt);
         UpdateBoltCatch(dt);
+        chargingHandleLatch.Tick(transform, BoltDragging, dt);
+        magazineReleaseButton.Tick(transform, Time.time < magReleasePressedUntil, dt);
         UpdateSelector(dt);
         FireLoop(dt);
     }
 
     void OnValidate()
     {
+        MigrateLegacyParts(); // shows an old weapon's bolt catch / selector settings in the new fields
         roundsPerMinute = Mathf.Max(1f, roundsPerMinute);
         barrelLengthMeters = Mathf.Max(0.02f, barrelLengthMeters);
         if (action == ActionType.Manual)
@@ -589,13 +698,7 @@ public class Firearm : MonoBehaviour, IItemStateful
         if (boltCarrier != null) boltVel += boltCycleSpeed;
         if (action == ActionType.SelfLoading) CycleAction();
 
-        // Play a random sound from the array if any clips are assigned
-        if (fireSounds != null && fireSounds.Length > 0)
-        {
-            AudioClip randomClip = fireSounds[UnityEngine.Random.Range(0, fireSounds.Length)];
-            PlayClip(randomClip);
-        }
-
+        PlayClip(fireSound);
         onFired?.Invoke();
         Fired?.Invoke(new ShotInfo
         {
@@ -954,8 +1057,11 @@ public class Firearm : MonoBehaviour, IItemStateful
         get { TryGetMagazineSlot(out AttachmentSlot s); return s; }
     }
 
+    float magReleasePressedUntil;
+
     public bool PressMagazineRelease()
     {
+        magReleasePressedUntil = Time.time + magazineReleasePressTime; // the button moves on every press, even if nothing is in the well
         if (magazine == null || MagazineUnlocked) return false;
         MagazineUnlocked = true;
         MagazineUnlockedAt = Time.time;
@@ -1304,36 +1410,10 @@ public class Firearm : MonoBehaviour, IItemStateful
         }
     }
 
-    /// <summary>Swings the bolt catch lever up when the bolt locks open and drops it when the bolt is released.</summary>
-    void UpdateBoltCatch(float dt)
-    {
-        if (boltCatch == null) return;
+    /// <summary>Moves the bolt catch lever to engaged while the bolt is locked open, and back when it is released or closed.</summary>
+    void UpdateBoltCatch(float dt) => boltCatchLever.Tick(transform, BoltCatchEngaged, dt);
 
-        float target = BoltCatchEngaged ? boltCatchOpenAngle : 0f;
-        if (boltCatchSnap)
-        {
-            boltCatchAngle = target; boltCatchVel = 0f; boltCatchSnap = false;
-        }
-        else
-        {
-            // Spring-damper (small substeps keep it stable), slightly underdamped by default so it snaps and settles.
-            dt = Mathf.Min(dt, 0.033f);
-            float k = boltCatchStiffness;
-            float c = 2f * boltCatchDampingRatio * Mathf.Sqrt(k);
-            int steps = Mathf.Max(1, Mathf.CeilToInt(dt / 0.002f));
-            float h = dt / steps;
-            for (int i = 0; i < steps; i++)
-            {
-                boltCatchVel += (-k * (boltCatchAngle - target) - c * boltCatchVel) * h;
-                boltCatchAngle += boltCatchVel * h;
-            }
-        }
-
-        Vector3 axis = boltCatchAxis.sqrMagnitude > 0.0001f ? boltCatchAxis.normalized : Vector3.right;
-        boltCatch.localRotation = boltCatchRestLocal * Quaternion.AngleAxis(boltCatchAngle, axis);
-    }
-
-    /// <summary>The angle (degrees) the selector switch sits at for a fire mode.</summary>
+    /// <summary>The position (degrees or metres) the selector switch sits at for a fire mode.</summary>
     public float SelectorAngleFor(FireMode mode)
     {
         switch (mode)
@@ -1345,24 +1425,22 @@ public class Firearm : MonoBehaviour, IItemStateful
         }
     }
 
-    /// <summary>Turns the selector switch model to the angle of the current mode (smoothly, taking Selector Time).</summary>
-    void UpdateSelector(float dt)
+    /// <summary>Moves the selector switch model to the position of the current mode.</summary>
+    void UpdateSelector(float dt) => selectorLever.TickTo(transform, SelectorAngleFor(Mode), dt);
+
+    /// <summary>Carries old weapons' single-transform bolt catch / selector settings over into the new parts (runs once per weapon).</summary>
+    void MigrateLegacyParts()
     {
-        if (selectorSwitch == null) return;
-
-        float target = SelectorAngleFor(Mode);
-        if (selectorSnap)
+        if (boltCatch != null && boltCatchLever.part == null)
         {
-            selectorAngle = target; selectorVel = 0f; selectorSnap = false;
+            boltCatchLever.Set(boltCatch, PartMotion.Kind.Rotate, boltCatchAxis, boltCatchOpenAngle, boltCatchStiffness, boltCatchDampingRatio);
+            boltCatch = null;
         }
-        else
+        if (selectorSwitch != null && selectorLever.part == null)
         {
-            // Critically damped glide that settles in about the same time the selector locks out firing.
-            selectorAngle = Mathf.SmoothDamp(selectorAngle, target, ref selectorVel, Mathf.Max(0.01f, selectorTime * 0.5f), Mathf.Infinity, dt);
+            selectorLever.Set(selectorSwitch, PartMotion.Kind.Rotate, selectorAxis, 0f, selectorLever.stiffness, selectorLever.dampingRatio);
+            selectorSwitch = null;
         }
-
-        Vector3 axis = selectorAxis.sqrMagnitude > 0.0001f ? selectorAxis.normalized : Vector3.right;
-        selectorSwitch.localRotation = selectorRestLocal * Quaternion.AngleAxis(selectorAngle, axis);
     }
 
     void SpawnEjected(AmmoData ammo, bool spent)
@@ -1454,8 +1532,8 @@ public class Firearm : MonoBehaviour, IItemStateful
 
         boltPos = BoltOpen ? boltTravel : 0f;
         boltVel = 0f;
-        selectorSnap = true; // a loaded save shows the switch in the right place immediately
-        boltCatchSnap = true;
+        selectorLever.Snap();   // a loaded save shows these parts in the right place immediately
+        boltCatchLever.Snap();
         StateChanged?.Invoke();
     }
 }

@@ -81,9 +81,13 @@ public class WeaponRecoil : MonoBehaviour
     Vector3 ang, angVel;
     float lin, linVel;
 
+    // Magazine-drop dip (gun model only). kickTime counts up to kickDuration, then the dip is over.
+    float kickDipDegrees, kickDuration = 1f, kickTime = 1f;
+
     Pickupable cachedItem;
     Firearm weapon;
     Vector3 pivotInItem;
+    Quaternion pivotRotInItem = Quaternion.identity;
 
     void Awake()
     {
@@ -99,8 +103,9 @@ public class WeaponRecoil : MonoBehaviour
     {
         ang = angVel = Vector3.zero;
         lin = linVel = 0f;
+        kickTime = kickDuration;
         if (look != null) look.ViewKickEuler = Vector3.zero;
-        if (slot != null) slot.SetRecoilPose(Vector3.zero, Vector3.zero, Quaternion.identity);
+        if (slot != null) slot.SetRecoilPose(Vector3.zero, Quaternion.identity, Vector3.zero, Quaternion.identity);
     }
 
     /// <summary>Gives the gun the recoil impulse of one shot (N*s). Called by FirearmController.</summary>
@@ -124,6 +129,19 @@ public class WeaponRecoil : MonoBehaviour
         angVel += new Vector3(climb, side, roll) / inertia;
     }
 
+    /// <summary>
+    /// A small dip of the muzzle (the gun drops a little when a magazine falls out of it). Not a shot: no kickback, no climb,
+    /// and it moves ONLY the gun model, never the camera. The muzzle dips by dipDegrees and comes back, taking durationSeconds
+    /// in total (a smooth down-and-up).
+    /// </summary>
+    public void ApplyKick(float dipDegrees, float durationSeconds)
+    {
+        if (Mathf.Abs(dipDegrees) < 0.0001f || durationSeconds <= 0.0001f) return;
+        kickDipDegrees = dipDegrees;
+        kickDuration = durationSeconds;
+        kickTime = 0f;
+    }
+
     void RefreshWeapon()
     {
         Pickupable current = slot != null ? slot.Current : null;
@@ -132,10 +150,12 @@ public class WeaponRecoil : MonoBehaviour
         cachedItem = current;
         weapon = current != null ? current.GetComponent<Firearm>() : null;
         pivotInItem = weapon != null ? weapon.RecoilPivotLocal : Vector3.zero;
+        pivotRotInItem = weapon != null ? weapon.RecoilPivotLocalRotation : Quaternion.identity;
 
         // A different gun starts calm.
         ang = angVel = Vector3.zero;
         lin = linVel = 0f;
+        kickTime = kickDuration;
     }
 
     static float Inertia(float effectiveMass, float comDistance)
@@ -203,12 +223,24 @@ public class WeaponRecoil : MonoBehaviour
         // Unity camera pitch is positive downward, so a rising muzzle is a negative pitch.
         look.ViewKickEuler = new Vector3(-ang.x * share, ang.y * share, ang.z * share * 0.5f) * Mathf.Rad2Deg;
 
+        // The gun's own part of the twist, in the RECOIL PIVOT's axes (HeldItemSlot turns these into the gun's real
+        // orientation, so the climb always rotates about the gun's right axis and the kick always pushes along the bore,
+        // whatever pose the gun is in: shouldered, hip, low ready).
         float gunShare = 1f - share;
         Quaternion gunRot = Quaternion.Euler(
             -ang.x * gunShare * Mathf.Rad2Deg,
             ang.y * gunShare * Mathf.Rad2Deg,
             -ang.z * gunShare * Mathf.Rad2Deg);
 
-        slot.SetRecoilPose(pivotInItem, new Vector3(0f, 0f, -lin), gunRot);
+        // Magazine-drop dip: gun model only (smooth down and back up over the set duration).
+        if (kickTime < kickDuration)
+        {
+            kickTime += rawDt;
+            float s = Mathf.Sin(Mathf.PI * Mathf.Clamp01(kickTime / kickDuration));
+            gunRot = Quaternion.Euler(kickDipDegrees * s, 0f, 0f) * gunRot; // +X euler = muzzle DOWN
+        }
+
+        // Straight back = along -Z of the recoil pivot (the way the bullet leaves is +Z).
+        slot.SetRecoilPose(pivotInItem, pivotRotInItem, new Vector3(0f, 0f, -lin), gunRot);
     }
 }
