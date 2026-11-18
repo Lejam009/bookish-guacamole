@@ -714,7 +714,13 @@ public class FirearmInteraction : MonoBehaviour
         Vector3 scale = inst != null ? inst.transform.lossyScale : Vector3.one;
 
         MagazineContents contents = g.EjectMagazine(out AttachmentData type, false);
-        MagazineItem.Drop(type, contents, pos, rot, scale, Vector3.down * 0.3f, inventory, playerColliders);
+
+        // It slides out of the well along the well's guide axis first (no clipping through the magwell), then falls free.
+        // magazineSlideDistance 0 = the old behaviour: spawn as a loose object right away.
+        if (g.magazineSlideDistance > 0.0001f && ms.Mount != null)
+            MagazineItem.DropGuided(type, contents, pos, rot, scale, ms.Mount, ms.insertOffset, g.magazineSlideDistance, g.magazineSlideStartSpeed, inventory, playerColliders);
+        else
+            MagazineItem.Drop(type, contents, pos, rot, scale, Vector3.down * 0.3f, inventory, playerColliders);
 
         // The gun lightens and drops a little in the hands.
         if (recoil != null) recoil.ApplyKick(g.magazineDropKickDegrees, g.magazineDropKickSeconds);

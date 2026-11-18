@@ -17,6 +17,7 @@ using UnityEngine;
 /// you walk up and press F to pick it up into your stash. Nothing to set up for that either.
 /// </summary>
 [DisallowMultipleComponent]
+[DefaultExecutionOrder(100)] // after the weapon has been posed this frame, so a magazine sliding out of a well never trails the gun
 public class MagazineItem : MonoBehaviour
 {
     [Tooltip("Live contents. Read-only in practice: look at it while playing to see what is inside.")]
@@ -99,6 +100,75 @@ public class MagazineItem : MonoBehaviour
         item.isDropped = true;
         Dropped.Add(item);
         return item;
+    }
+
+    // ================================================================== sliding out of the well first
+
+    // While sliding the magazine has no physics: it rides the gun's magwell axis, then becomes a normal falling object.
+    bool sliding;
+    Transform slideMount;
+    Vector3 slideStartLocal, slideDirLocal;
+    Quaternion slideRotLocal;
+    float slideTravelled, slideDistance, slideSpeed, slideMinSpeed;
+    Rigidbody slideBody;
+    BoxCollider slideBox;
+
+    /// <summary>
+    /// Like Drop, but the magazine first slides out of the magwell along the well's axis (the slot's Insert Offset direction, which follows the
+    /// gun as it moves), picking up speed from gravity along that axis. Only after it has travelled slideDistance metres does it
+    /// become a free falling object, so it can't drop straight through the magwell.
+    /// </summary>
+    public static MagazineItem DropGuided(AttachmentData data, MagazineContents contents, Vector3 position, Quaternion rotation, Vector3 scale,
+                                          Transform mount, Vector3 insertOffsetLocal, float slideDistance, float startSpeed,
+                                          AttachmentInventory inventory, Collider[] ignoreColliders)
+    {
+        MagazineItem item = Drop(data, contents, position, rotation, scale, Vector3.zero, inventory, ignoreColliders);
+        if (item == null) return null;
+        if (mount == null || slideDistance <= 0.0001f || insertOffsetLocal.sqrMagnitude < 1e-8f) return item;
+
+        item.slideBody = item.GetComponent<Rigidbody>();
+        item.slideBox = item.GetComponent<BoxCollider>();
+        if (item.slideBody != null) item.slideBody.isKinematic = true;
+        if (item.slideBox != null) item.slideBox.isTrigger = true;
+
+        item.slideMount = mount;
+        item.slideStartLocal = mount.InverseTransformPoint(position);
+        item.slideRotLocal = Quaternion.Inverse(mount.rotation) * rotation;
+        item.slideDirLocal = insertOffsetLocal.normalized;
+        item.slideDistance = slideDistance;
+        item.slideTravelled = 0f;
+        item.slideMinSpeed = Mathf.Max(0.01f, startSpeed);
+        item.slideSpeed = item.slideMinSpeed;
+        item.sliding = true;
+        return item;
+    }
+
+    void LateUpdate()
+    {
+        if (!sliding) return;
+
+        if (slideMount == null) { EndSlide(Vector3.down); return; } // the gun is gone: just fall
+
+        Vector3 axis = slideMount.TransformDirection(slideDirLocal).normalized;   // out of the well, in the gun's current pose
+        float dt = Time.deltaTime;
+        slideSpeed = Mathf.Max(slideMinSpeed, slideSpeed + Vector3.Dot(Physics.gravity, axis) * dt); // gravity along the well speeds it up, never stalls
+        slideTravelled += slideSpeed * dt;
+
+        if (slideTravelled >= slideDistance) { EndSlide(axis); return; }
+
+        transform.SetPositionAndRotation(slideMount.TransformPoint(slideStartLocal) + axis * slideTravelled,
+                                         slideMount.rotation * slideRotLocal);
+    }
+
+    void EndSlide(Vector3 axis)
+    {
+        sliding = false;
+        if (slideBox != null) slideBox.isTrigger = false;
+        if (slideBody != null)
+        {
+            slideBody.isKinematic = false;
+            Pickupable.SetVelocity(slideBody, axis * slideSpeed); // leaves the well at the speed it had
+        }
     }
 
     void OnDestroy() => Dropped.Remove(this);

@@ -214,6 +214,9 @@ public class Firearm : MonoBehaviour, IItemStateful
     public InspectHotspot chargingHandleHotspot;
     [Tooltip("How far back (0 to 1 of the bolt travel) the handle has to be pulled before the gun ejects what's in the chamber.")]
     [Range(0.5f, 1f)] public float boltDragEjectAt = 0.85f;
+    [Tooltip("While you keep holding the handle: how close to fully forward (0 to 1 of the travel) you have to push it for the bolt to count as closed again. " +
+             "It then strips the next round into the chamber, and pulling the handle back again ejects that round, cycling the gun as many times as you like without letting go.")]
+    [Range(0f, 0.3f)] public float boltDragResetAt = 0.05f;
 
     [Header("Magazine Miss Axes (optional)")]
     [Tooltip("What a missed magazine insertion looks like. Make EMPTY children of the weapon around the magwell, one per way the magazine can go wrong " +
@@ -245,6 +248,12 @@ public class Firearm : MonoBehaviour, IItemStateful
     public float magazineDropKickDegrees = 1.5f;
     [Tooltip("How long that dip lasts in total (seconds, down and back up). The dip only moves the gun, not the camera.")]
     public float magazineDropKickSeconds = 0.3f;
+    [Tooltip("When the magazine release is pressed and the magazine falls out: how far (metres) it slides out along the magwell's guide axis " +
+             "(the magazine slot's Insert Offset direction) before it becomes a free falling object. Make it at least as long as the part of the magazine that sits " +
+             "inside the magwell, so it clears the well instead of dropping through it. 0 = it just drops.")]
+    public float magazineSlideDistance = 0.12f;
+    [Tooltip("The speed (m/s) the magazine starts sliding out at. Gravity along the well adds to it, it never goes slower than this.")]
+    public float magazineSlideStartSpeed = 0.15f;
 
     [Header("Dust Cover / Ejection Port Cover (visual)")]
     [Tooltip("The spring-loaded cover over the ejection port (the AR-15's dust cover). Pose the model with it CLOSED. It swings to its open pose by Amount. " +
@@ -1144,6 +1153,22 @@ public class Firearm : MonoBehaviour, IItemStateful
             HammerCocked = true;             // the carrier cocks the hammer on its way back
             PlayClip(rackSound);
             StateChanged?.Invoke();
+        }
+        else if (boltDragPassed && !boltDragLock && !BoltOpen && boltDragTarget <= boltDragResetAt)
+        {
+            // Pushed all the way home again without letting go: the bolt closes and strips the next round into the chamber,
+            // and the handle is ready to be pulled back again to eject it (and so on, as many cycles as you like in one hold).
+            bool fed = FeedFromMagazine();
+
+            // An empty magazine that would hold the bolt open is left to EndBoltDrag, exactly as when you let go.
+            bool wouldHoldOpen = !fed && action == ActionType.SelfLoading && holdOpenOnEmpty && magazine != null;
+            if (!wouldHoldOpen)
+            {
+                boltDragPassed = false;
+                onRack?.Invoke();
+                Racked?.Invoke();
+                StateChanged?.Invoke();
+            }
         }
     }
 
