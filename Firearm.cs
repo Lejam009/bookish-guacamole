@@ -30,6 +30,9 @@ public class MagazineMissAxis
     [Tooltip("Tick this for a miss that slams the magazine into the dust cover (e.g. an axis on the right side of an AR-15): when this miss happens the cover is knocked shut. " +
              "Needs the Dust Cover set up on the Firearm.")]
     public bool closesDustCover;
+    [Tooltip("How far along this line the magazine has to slide before it hits the dust cover and knocks it shut. 0 = the outer end of the line, 1 = the deepest point (the empty). " +
+             "If the magazine is pulled back out before reaching this, the cover stays as it was. Only used when Closes Dust Cover is ticked.")]
+    [Range(0f, 1f)] public float closesAtDepth = 0.5f;
 }
 
 /// <summary>
@@ -191,6 +194,11 @@ public class Firearm : MonoBehaviour, IItemStateful
     public Transform ejectionPort;
     [Tooltip("Optional. The bolt carrier / slide. It is moved along Bolt Axis by a little spring simulation.")]
     public Transform boltCarrier;
+    [Tooltip("Optional. Where the chambered round is shown. Make an EMPTY as a child of the Bolt Carrier (so the round rides back with the bolt) at the chamber, " +
+             "and turn it so its blue/Z arrow points down the barrel. The cartridge prefab appears here only while a round is in the chamber: " +
+             "the Cartridge Prefab of the ammo for a live round, its Casing Prefab for a fired case. Nothing is shown when the chamber is empty. " +
+             "(Both prefabs are set on the Ammo Data asset. Their Rigidbody and colliders are removed on this copy.)")]
+    public Transform chamberRoundMount;
 
     [Header("Reload Interaction Hotspots (optional)")]
     [Tooltip("Clickable spots used in reload interaction mode (hold R to enter, outside a safe zone). For each one: make an EMPTY CHILD of " +
@@ -578,6 +586,66 @@ public class Firearm : MonoBehaviour, IItemStateful
         UpdateDustCover(dt);
         UpdateSelector(dt);
         FireLoop(dt);
+        UpdateChamberVisual();
+    }
+
+    // ================================================================== chamber visual
+
+    GameObject chamberVisual;
+    ChamberState shownChamber = ChamberState.Empty;
+    AmmoData shownAmmo;
+
+    /// <summary>
+    /// Keeps a model of the chambered round on Chamber Round Mount: the live cartridge, the spent case, or nothing.
+    /// It follows the Chamber state, so loading, firing, racking and loading from a save all show the right thing.
+    /// </summary>
+    void UpdateChamberVisual()
+    {
+        if (chamberRoundMount == null) return;
+
+        ChamberState state = ChamberedAmmo != null ? Chamber : ChamberState.Empty;
+        AmmoData ammoNow = state == ChamberState.Empty ? null : ChamberedAmmo;
+        bool upToDate = state == shownChamber && ammoNow == shownAmmo && (state == ChamberState.Empty || chamberVisual != null || PrefabFor(ammoNow, state) == null);
+        if (upToDate) return;
+
+        if (chamberVisual != null) { Destroy(chamberVisual); chamberVisual = null; }
+        shownChamber = state;
+        shownAmmo = ammoNow;
+        if (state == ChamberState.Empty) return;
+
+        GameObject prefab = PrefabFor(ammoNow, state);
+        if (prefab == null) return;
+
+        chamberVisual = Instantiate(prefab, chamberRoundMount);
+        Transform t = chamberVisual.transform;
+        t.localPosition = Vector3.zero;
+        t.localRotation = Quaternion.identity;
+
+        // Keep the round its real size even if the parts it hangs on are scaled (a carrier imported at scale 100, say).
+        Vector3 parentScale = chamberRoundMount.lossyScale;
+        Vector3 want = prefab.transform.localScale;
+        t.localScale = new Vector3(want.x / Mathf.Max(0.0001f, parentScale.x),
+                                   want.y / Mathf.Max(0.0001f, parentScale.y),
+                                   want.z / Mathf.Max(0.0001f, parentScale.z));
+
+        // It is only a model here: no physics, no self-destruct timers copied from the ejected version.
+        foreach (Rigidbody rb in chamberVisual.GetComponentsInChildren<Rigidbody>())
+        {
+            rb.isKinematic = true;
+            rb.detectCollisions = false;
+            Destroy(rb);
+        }
+        foreach (Collider c in chamberVisual.GetComponentsInChildren<Collider>())
+        {
+            c.enabled = false;
+            Destroy(c);
+        }
+    }
+
+    static GameObject PrefabFor(AmmoData ammoData, ChamberState state)
+    {
+        if (ammoData == null) return null;
+        return state == ChamberState.Live ? ammoData.cartridgePrefab : state == ChamberState.Spent ? ammoData.casingPrefab : null;
     }
 
     // ================================================================== dust cover
@@ -854,6 +922,15 @@ public class Firearm : MonoBehaviour, IItemStateful
                 Gizmos.DrawWireSphere(a, 0.004f);
                 Gizmos.DrawLine(a, a + m.axis.forward * Mathf.Max(0.01f, m.length));
             }
+        }
+
+        // Chambered round mount: cyan arrow, pointing the way the nose of the cartridge points (down the barrel).
+        if (chamberRoundMount != null)
+        {
+            Gizmos.color = Color.cyan;
+            Vector3 c = chamberRoundMount.position;
+            Gizmos.DrawWireSphere(c, 0.003f);
+            Gizmos.DrawLine(c, c + chamberRoundMount.forward * 0.03f);
         }
 
         if (recoilPivot == null) return;

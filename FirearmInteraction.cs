@@ -125,6 +125,7 @@ public class FirearmInteraction : MonoBehaviour
     MagazineMissAxis missAxis, lastMissAxis; // the miss line the magazine is sliding along (null = not missed)
     bool missExiting;                        // the miss is over, easing back to normal guidance
     float missDepth, missDepthVel, missBlend;
+    bool missCoverPending;                   // this miss still has to knock the dust cover shut
     bool framePressed, frameHeld;     // this frame's click input, handed to the late step
     float guideWeight;                 // 0 = following the cursor freely, 1 = fully guided into the well
     const float ReleaseAcceptWeight = 0.5f; // letting go while at least this guided seats the magazine
@@ -427,6 +428,13 @@ public class FirearmInteraction : MonoBehaviour
                                                           Mathf.Max(0.005f, guidedFollowTime)), 0f, mlen);
                 missBlend = Mathf.MoveTowards(missBlend, missExiting ? 0f : 1f, dt / Mathf.Max(0.01f, missBlendSeconds));
 
+                // The magazine has slid far enough in along the line to hit the dust cover: it slams shut.
+                if (missCoverPending && 1f - missDepth / mlen >= missAxis.closesAtDepth)
+                {
+                    gun.CloseDustCover();
+                    missCoverPending = false;
+                }
+
                 Vector3 missPos = mo + md * missDepth;
                 Quaternion missRot = Quaternion.FromToRotation(axis, md) * seatRot; // tilted the way the miss axis points
                 pos = Vector3.Lerp(pos, missPos, missBlend);
@@ -491,7 +499,7 @@ public class FirearmInteraction : MonoBehaviour
 
         missAxis = lastMissAxis = pick;
         missExiting = false;
-        if (pick.closesDustCover) gun.CloseDustCover(); // this miss slams into the dust cover and knocks it shut
+        missCoverPending = pick.closesDustCover;        // this miss slams into the dust cover: it shuts once the magazine slides far enough in
         missDepth = Mathf.Clamp(Vector3.Dot(currentPos - pick.axis.position, pick.axis.forward), 0f, Mathf.Max(0.01f, pick.length));
         missDepthVel = 0f;
         return true;
@@ -501,6 +509,7 @@ public class FirearmInteraction : MonoBehaviour
     {
         missAxis = null;
         missExiting = false;
+        missCoverPending = false;
         missBlend = 0f;
         missDepthVel = 0f;
     }
