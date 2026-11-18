@@ -175,6 +175,11 @@ public class WeaponAttachments : MonoBehaviour, IItemStateful
             if (item == null) item = go.AddComponent<MagazineItem>();
             Firearm gun = GetComponent<Firearm>();
             item.contents = magazine ?? MagazineItem.CreateFresh(data, gun != null ? gun.fallbackMagazineCapacity : 30);
+
+            // Show every round in the magazine model (if the prefab has a MagazineRoundDisplay): it looks the cartridge models up
+            // in the same ammo database the gun uses.
+            MagazineRoundDisplay roundDisplay = go.GetComponentInChildren<MagazineRoundDisplay>(true);
+            if (roundDisplay != null && gun != null) roundDisplay.UseAmmoDatabase(gun.ammoDatabase);
         }
 
         AttachmentPrefabInfo info = go.GetComponent<AttachmentPrefabInfo>();

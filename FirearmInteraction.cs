@@ -325,6 +325,7 @@ public class FirearmInteraction : MonoBehaviour
             drag = DragKind.None;
             return;
         }
+        BindRounds(visual, heldContents);
 
         BeginHolding(visual, false);
     }
@@ -686,7 +687,16 @@ public class FirearmInteraction : MonoBehaviour
 
         heldContents = e.mag;
         heldType = e.data;
+        BindRounds(visual, e.mag);
         BeginHolding(visual, true);
+    }
+
+    /// <summary>The magazine in the hand has no MagazineItem (StripVisual removes it), so its round display is told which rounds to show.</summary>
+    static void BindRounds(GameObject visual, MagazineContents contents)
+    {
+        if (visual == null) return;
+        foreach (MagazineRoundDisplay display in visual.GetComponentsInChildren<MagazineRoundDisplay>(true))
+            display.Bind(contents);
     }
 
     static void StripVisual(GameObject go)
